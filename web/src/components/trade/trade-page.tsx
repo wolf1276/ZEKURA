@@ -10,7 +10,7 @@ import { TradePanel } from "@/components/trade/trade-panel";
 import { RecentOrders } from "@/components/trade/recent-orders";
 import { OrderStatusTimeline } from "@/components/trade/order-status-timeline";
 import { DEFAULT_PAIR, getMarketInsights } from "@/lib/mock/market";
-import { mockMatcher } from "@/lib/mock/matcher";
+import { matcher } from "@/services/matcher/matcherClient";
 import type { AssetPair, Order } from "@/lib/types";
 
 const MID_PRICES: Record<string, number> = {
@@ -23,7 +23,7 @@ export function TradePage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [trackedOrderId, setTrackedOrderId] = useState<string | null>(null);
 
-  useEffect(() => mockMatcher.subscribe(setOrders), []);
+  useEffect(() => matcher.subscribe(setOrders), []);
 
   const midPrice = MID_PRICES[pair.id] ?? 1;
   const insights = useMemo(() => getMarketInsights(midPrice), [midPrice]);
@@ -34,7 +34,7 @@ export function TradePage() {
   }, []);
 
   const handleCancel = useCallback((id: string) => {
-    mockMatcher.cancelOrder(id);
+    void matcher.cancelOrder(id);
   }, []);
 
   return (

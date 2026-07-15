@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { CheckCircle2, ChevronDown, Loader2, ShieldCheck } from "lucide-react";
+import { CheckCircle2, ChevronDown, Loader2, ShieldCheck, WalletMinimal } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,15 +11,16 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Slider } from "@/components/ui/slider";
 import { WalletCard } from "@/components/trade/wallet-card";
-import { mockMatcher } from "@/lib/mock/matcher";
+import { useSubmitOrder } from "@/hooks/use-submit-order";
+import { useWallet } from "@/hooks/use-wallet";
 import { ASSET_PAIRS } from "@/lib/mock/market";
-import { MOCK_BALANCES } from "@/lib/mock/wallet";
 import { formatAmount } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { AssetPair, ExpiryOption, Order, OrderSide } from "@/lib/types";
 
 const EXPIRY_OPTIONS: ExpiryOption[] = ["10m", "30m", "1h", "GTC"];
 const FEE_BPS = 10; // 0.10%
+const INTEGER_FORMAT = /^[0-9]+$/;
 
 interface TradePanelProps {
   pair: AssetPair;
@@ -34,21 +35,27 @@ export function TradePanel({
   midPrice,
   onOrderCreated,
 }: TradePanelProps) {
+  const wallet = useWallet();
+  const { state: submitState, submit, reset: resetSubmit } = useSubmitOrder();
+
   const [side, setSide] = useState<OrderSide>("BUY");
   const [amount, setAmount] = useState("");
-  const [limitPrice, setLimitPrice] = useState(() => midPrice.toFixed(3));
+  const [limitPrice, setLimitPrice] = useState(() => Math.round(midPrice).toString());
   const [expiry, setExpiry] = useState<ExpiryOption>("1h");
-  const [submitting, setSubmitting] = useState(false);
-  const [success, setSuccess] = useState(false);
 
-  const availableBalance =
-    side === "BUY" ? MOCK_BALANCES[pair.quote] ?? 0 : MOCK_BALANCES[pair.base] ?? 0;
+  const submitting = submitState.phase === "signing" || submitState.phase === "disclosing";
+  const success = submitState.phase === "success";
+  const submitError = submitState.phase === "error" ? submitState.message : null;
+
+  const availableBalance = Number(wallet.balanceFor(side === "BUY" ? pair.quote : pair.base));
   const balanceSymbol = side === "BUY" ? pair.quote : pair.base;
 
   const parsedAmount = Number(amount);
   const parsedPrice = Number(limitPrice);
-  const isAmountValid = amount.trim() !== "" && parsedAmount > 0;
-  const isPriceValid = limitPrice.trim() !== "" && parsedPrice > 0;
+  const isAmountValid =
+    amount.trim() !== "" && parsedAmount > 0 && INTEGER_FORMAT.test(amount.trim());
+  const isPriceValid =
+    limitPrice.trim() !== "" && parsedPrice > 0 && INTEGER_FORMAT.test(limitPrice.trim());
 
   const cost = isAmountValid && isPriceValid ? parsedAmount * parsedPrice : 0;
   const fee = cost * (FEE_BPS / 10_000);
@@ -68,35 +75,38 @@ export function TradePanel({
     return Math.min(100, Math.round((parsedAmount / maxAmount) * 100));
   }, [availableBalance, parsedAmount, parsedPrice, side]);
 
+  // Reset the success/error banner once the user starts changing the order again.
+  useEffect(() => {
+    if (submitState.phase === "success" || submitState.phase === "error") resetSubmit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-arm on user edits, not on resetSubmit identity
+  }, [side, amount, limitPrice, expiry, pair.id]);
+
   function applySliderPct(pct: number) {
     if (side === "SELL") {
-      setAmount((availableBalance * (pct / 100)).toFixed(2));
+      setAmount(Math.round(availableBalance * (pct / 100)).toString());
       return;
     }
     const price = parsedPrice > 0 ? parsedPrice : midPrice;
     if (price <= 0) return;
-    setAmount(((availableBalance / price) * (pct / 100)).toFixed(2));
+    setAmount(Math.round((availableBalance / price) * (pct / 100)).toString());
   }
 
   async function handleSubmit() {
+    if (!wallet.isConnected) {
+      wallet.connect();
+      return;
+    }
     if (!canSubmit) return;
-    setSubmitting(true);
-    setSuccess(false);
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 650));
-      const order = mockMatcher.createOrder({
-        pair: `${pair.base}/${pair.quote}`,
-        side,
-        price: limitPrice,
-        amount,
-        expiryLabel: expiry,
-      });
+    const order = await submit({
+      pair,
+      side,
+      amount,
+      price: limitPrice,
+      expiry,
+    });
+    if (order) {
       onOrderCreated(order);
-      setSuccess(true);
       setAmount("");
-      window.setTimeout(() => setSuccess(false), 2200);
-    } finally {
-      setSubmitting(false);
     }
   }
 
@@ -177,10 +187,10 @@ export function TradePanel({
         <div className="relative">
           <input
             id="amount"
-            inputMode="decimal"
-            placeholder="0.00"
+            inputMode="numeric"
+            placeholder="0"
             value={amount}
-            onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))}
+            onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ""))}
             aria-invalid={amount !== "" && !isAmountValid}
             className={cn(
               "w-full rounded-md border bg-white/[0.02] px-3 py-2.5 pr-20 font-mono text-sm tabular-nums text-foreground outline-none transition-colors",
@@ -212,10 +222,10 @@ export function TradePanel({
         <div className="relative">
           <input
             id="limit-price"
-            inputMode="decimal"
-            placeholder="0.00"
+            inputMode="numeric"
+            placeholder="0"
             value={limitPrice}
-            onChange={(e) => setLimitPrice(e.target.value.replace(/[^0-9.]/g, ""))}
+            onChange={(e) => setLimitPrice(e.target.value.replace(/[^0-9]/g, ""))}
             aria-invalid={limitPrice !== "" && !isPriceValid}
             className={cn(
               "w-full rounded-md border bg-white/[0.02] px-3 py-2.5 pr-16 font-mono text-sm tabular-nums text-foreground outline-none transition-colors",
@@ -292,6 +302,7 @@ export function TradePanel({
             Insufficient {balanceSymbol} balance.
           </p>
         )}
+        {submitError && <p className="text-xs text-destructive">{submitError}</p>}
         <div className="flex items-start gap-2 border-t border-border pt-2.5">
           <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-primary" />
           <p className="text-[11px] leading-relaxed text-muted-foreground">
@@ -303,7 +314,7 @@ export function TradePanel({
 
       <button
         onClick={handleSubmit}
-        disabled={!canSubmit}
+        disabled={wallet.isConnected && !canSubmit}
         className={cn(
           "relative flex h-11 items-center justify-center gap-2 rounded-md text-sm font-semibold transition-colors",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
@@ -314,7 +325,18 @@ export function TradePanel({
         )}
       >
         <AnimatePresence mode="wait" initial={false}>
-          {submitting ? (
+          {!wallet.isConnected ? (
+            <motion.span
+              key="connect"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex items-center gap-2"
+            >
+              <WalletMinimal className="size-4" />
+              Connect Wallet
+            </motion.span>
+          ) : submitting ? (
             <motion.span
               key="loading"
               initial={{ opacity: 0 }}
@@ -323,7 +345,7 @@ export function TradePanel({
               className="flex items-center gap-2"
             >
               <Loader2 className="size-4 animate-spin" />
-              Submitting Order
+              {submitState.phase === "signing" ? "Awaiting Wallet Signature" : "Submitting Order"}
             </motion.span>
           ) : success ? (
             <motion.span

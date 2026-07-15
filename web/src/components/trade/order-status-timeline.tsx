@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { Check } from "lucide-react";
 import { OrderStatusBadge } from "@/components/trade/order-status-badge";
 import { formatOrderId, formatRelativeTime } from "@/lib/format";
-import { mockMatcher } from "@/lib/mock/matcher";
+import { matcher } from "@/services/matcher/matcherClient";
 import { statusToStageIndex, TIMELINE_STAGES } from "@/lib/order-status";
 import type { ActivityEvent, ActivityKind, Order } from "@/lib/types";
 
@@ -25,7 +25,7 @@ export function OrderStatusTimeline({ order }: OrderStatusTimelineProps) {
   const currentIndex = statusToStageIndex(order.status);
 
   useEffect(() => {
-    return mockMatcher.subscribeActivity((event) => {
+    return matcher.subscribeActivity((event) => {
       if (event.orderId !== order.id) return;
       setActivity((prev) => [...prev, event]);
     });

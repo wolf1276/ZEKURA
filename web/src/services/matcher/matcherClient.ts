@@ -1,0 +1,228 @@
+/**
+ * Real Matcher-backed replacement for the old `lib/mock/matcher.ts`
+ * MockMatcher — deliberately kept to the exact same public shape
+ * (`subscribe`, `subscribeActivity`, `cancelOrder`) so the components that
+ * already consume it (trade-page.tsx, order-status-timeline.tsx) don't need
+ * to be redesigned, only re-pointed at this module.
+ *
+ * Reads come from the Matcher's real REST API (matcher/API.md) via the
+ * same-origin proxy routes in services/matcher/api.ts, and stay live via a
+ * direct WebSocket connection to the Matcher's `/ws` (not proxied — WS
+ * connections aren't subject to the CORS restriction that requires proxying
+ * the REST calls).
+ */
+import { ASSET_PAIRS } from "@/lib/mock/market";
+import type { ActivityEvent, ActivityKind, Order, OrderStatus } from "@/lib/types";
+import type { MatcherEitherAsset, MatcherOrder, MatcherWsMessage } from "@/types/matcher";
+import * as api from "./api";
+import { MatcherApiError } from "./api";
+
+const WS_URL = process.env.NEXT_PUBLIC_MATCHER_WS_URL?.trim() || "ws://localhost:4000/ws";
+const RECONNECT_DELAY_MS = 3000;
+
+/** The Matcher only knows asset IDs, not this app's display symbols — resolve back via lib/mock/market.ts. */
+function pairLabelFor(asset: MatcherEitherAsset): string {
+  const known = ASSET_PAIRS.find(
+    (p) => p.baseAssetId === asset.left && p.quoteAssetId === asset.right,
+  );
+  return known ? `${known.base}/${known.quote}` : `${asset.left}/${asset.right}`;
+}
+
+function toOrder(o: MatcherOrder): Order {
+  return {
+    id: o.id,
+    pair: pairLabelFor(o.asset),
+    side: o.side,
+    price: o.price,
+    amount: o.amount,
+    status: o.status as OrderStatus,
+    createdAt: o.createdAt,
+    expiresAt: o.expiresAt,
+    // The Matcher doesn't echo back a UI-facing expiry label — display code
+    // (formatExpiry) derives the label from expiresAt directly, so this is
+    // never read for real orders.
+    expiryLabel: "GTC",
+  };
+}
+
+const WS_KIND_TO_ACTIVITY: Partial<Record<MatcherWsMessage["type"], ActivityKind>> = {
+  "order.created": "ORDER_CREATED",
+  "order.matched": "ORDER_MATCHED",
+  "order.settling": "SETTLEMENT_STARTED",
+  "order.filled": "ORDER_FILLED",
+  "order.cancelled": "ORDER_CANCELLED",
+  "order.expired": "ORDER_EXPIRED",
+  "order.failed": "ORDER_FAILED",
+};
+
+type OrderListener = (orders: Order[]) => void;
+type ActivityListener = (event: ActivityEvent) => void;
+
+class MatcherClient {
+  private orders = new Map<string, Order>();
+  private orderListeners = new Set<OrderListener>();
+  private activityListeners = new Set<ActivityListener>();
+  private ws: WebSocket | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private started = false;
+
+  list(): Order[] {
+    return Array.from(this.orders.values());
+  }
+
+  subscribe(listener: OrderListener): () => void {
+    this.ensureStarted();
+    this.orderListeners.add(listener);
+    listener(this.list());
+    return () => this.orderListeners.delete(listener);
+  }
+
+  subscribeActivity(listener: ActivityListener): () => void {
+    this.ensureStarted();
+    this.activityListeners.add(listener);
+    return () => this.activityListeners.delete(listener);
+  }
+
+  async cancelOrder(id: string): Promise<void> {
+    try {
+      const { order } = await api.cancelOrder(id);
+      this.upsertOrder(toOrder(order));
+    } catch (err) {
+      // A 404/409 here just means another tab or the lifecycle already
+      // moved the order past OPEN — nothing for the UI to recover from.
+      if (!(err instanceof MatcherApiError)) throw err;
+    }
+  }
+
+  private ensureStarted() {
+    if (this.started || typeof window === "undefined") return;
+    this.started = true;
+    void this.refreshOpenOrders();
+    this.connectSocket();
+  }
+
+  private async refreshOpenOrders() {
+    try {
+      const { orders } = await api.listOpenOrders();
+      for (const o of orders) this.upsertOrder(toOrder(o), { emit: false });
+      this.emitOrders();
+    } catch {
+      // The live WS feed will still populate orders as events arrive; an
+      // initial-list fetch failure (e.g. Matcher briefly unreachable) isn't
+      // fatal.
+    }
+  }
+
+  private connectSocket() {
+    if (typeof window === "undefined") return;
+    const ws = new WebSocket(WS_URL);
+    this.ws = ws;
+
+    ws.addEventListener("message", (event) => {
+      let message: MatcherWsMessage;
+      try {
+        message = JSON.parse(event.data as string);
+      } catch {
+        return;
+      }
+      this.handleMessage(message);
+    });
+
+    const scheduleReconnect = () => {
+      if (this.reconnectTimer) return;
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        this.connectSocket();
+      }, RECONNECT_DELAY_MS);
+    };
+    ws.addEventListener("close", scheduleReconnect);
+    ws.addEventListener("error", () => ws.close());
+  }
+
+  private handleMessage(message: MatcherWsMessage) {
+    switch (message.type) {
+      case "order.created":
+      case "order.cancelled":
+      case "order.expired":
+        this.upsertOrder(toOrder(message.payload));
+        break;
+      case "order.matched":
+        this.markStatus(message.payload.buyOrderId, "MATCHED");
+        this.markStatus(message.payload.sellOrderId, "MATCHED");
+        break;
+      case "order.settling":
+        this.markStatus(message.payload.match.buyOrderId, "SETTLING");
+        this.markStatus(message.payload.match.sellOrderId, "SETTLING");
+        break;
+      case "order.filled":
+        this.markStatus(message.payload.match.buyOrderId, "FILLED");
+        this.markStatus(message.payload.match.sellOrderId, "FILLED");
+        break;
+      case "order.failed":
+        this.markStatus(message.payload.match.buyOrderId, "FAILED");
+        this.markStatus(message.payload.match.sellOrderId, "FAILED");
+        break;
+    }
+
+    this.emitActivityForMessage(message, WS_KIND_TO_ACTIVITY[message.type]);
+  }
+
+  private emitActivityForMessage(
+    message: MatcherWsMessage,
+    kind: ActivityKind | undefined,
+  ) {
+    if (!kind) return;
+    if (
+      message.type === "order.matched" ||
+      message.type === "order.settling" ||
+      message.type === "order.filled" ||
+      message.type === "order.failed"
+    ) {
+      const match = "match" in message.payload ? message.payload.match : message.payload;
+      this.emitActivity(kind, match.buyOrderId, match.asset, match.price, match.amount);
+      this.emitActivity(kind, match.sellOrderId, match.asset, match.price, match.amount);
+      return;
+    }
+    const order = message.payload;
+    this.emitActivity(kind, order.id, order.asset, order.price, order.amount);
+  }
+
+  private markStatus(orderId: string, status: OrderStatus) {
+    const existing = this.orders.get(orderId);
+    if (!existing) return;
+    this.upsertOrder({ ...existing, status });
+  }
+
+  private upsertOrder(order: Order, options: { emit?: boolean } = {}) {
+    this.orders.set(order.id, order);
+    if (options.emit !== false) this.emitOrders();
+  }
+
+  private emitOrders() {
+    const list = this.list();
+    for (const listener of this.orderListeners) listener(list);
+  }
+
+  private emitActivity(
+    kind: ActivityKind,
+    orderId: string,
+    asset: MatcherEitherAsset,
+    price: string,
+    amount: string,
+  ) {
+    const order = this.orders.get(orderId);
+    const event: ActivityEvent = {
+      id: `${orderId}-${kind}-${Date.now()}`,
+      kind,
+      orderId,
+      pair: order?.pair ?? pairLabelFor(asset),
+      side: order?.side ?? "BUY",
+      amount,
+      price,
+      timestamp: Date.now(),
+    };
+    for (const listener of this.activityListeners) listener(event);
+  }
+}
+
+export const matcher = new MatcherClient();

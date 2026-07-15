@@ -1,4 +1,9 @@
-import type { ActivityKind, OrderStatus, OrderTimelineStage } from "@/lib/types";
+import type {
+  ActivityKind,
+  ExpiryOption,
+  OrderStatus,
+  OrderTimelineStage,
+} from "@/lib/types";
 
 export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
   OPEN: "Open",
@@ -51,4 +56,20 @@ export const ACTIVITY_LABEL: Record<ActivityKind, string> = {
   ORDER_FILLED: "Filled",
   ORDER_CANCELLED: "Cancelled",
   ORDER_EXPIRED: "Expired",
+  ORDER_FAILED: "Failed",
 };
+
+/** Converts a trade-panel expiry selection into a Matcher-facing unix-second deadline. */
+export function expiryToUnixSeconds(expiry: ExpiryOption): number {
+  const now = Math.floor(Date.now() / 1000);
+  switch (expiry) {
+    case "10m":
+      return now + 600;
+    case "30m":
+      return now + 1800;
+    case "1h":
+      return now + 3600;
+    case "GTC":
+      return 9999999999;
+  }
+}

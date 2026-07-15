@@ -55,7 +55,8 @@ export type ActivityKind =
   | "SETTLEMENT_STARTED"
   | "ORDER_FILLED"
   | "ORDER_CANCELLED"
-  | "ORDER_EXPIRED";
+  | "ORDER_EXPIRED"
+  | "ORDER_FAILED";
 
 export interface ActivityEvent {
   id: string;
