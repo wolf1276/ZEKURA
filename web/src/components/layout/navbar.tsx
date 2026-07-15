@@ -13,14 +13,14 @@ import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { label: "Dashboard", href: "/dashboard" },
-  { label: "Trade", href: "/" },
+  { label: "Trade", href: "/trade" },
   { label: "My Orders", href: "/orders" },
   { label: "Activity", href: "/activity" },
   { label: "Settings", href: "/settings" },
 ];
 
 function isActive(href: string, pathname: string) {
-  return href === "/" ? pathname === "/" : pathname.startsWith(href);
+  return pathname === href || pathname.startsWith(`${href}/`);
 }
 
 function NavLinks({ className }: { className?: string }) {

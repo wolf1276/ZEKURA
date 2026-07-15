@@ -138,6 +138,36 @@
   }
 }
 
+/* Kimia design system — scoped semantic tokens for the content-first landing
+   page only (does NOT affect the dark app). Colors are the Kimia design.md
+   tokens used verbatim (lab()/oklab() render natively). surface.base=#000000
+   is a scrape artifact for a light content site, so the page surface uses
+   surface.muted (white); radius.sm's 16777200px pill hack maps to 9999px. */
+.kimia {
+  --k-text-primary: lab(2.75381 0 0);
+  --k-text-secondary: #292521;
+  --k-text-tertiary: lab(34.924 0 0);
+  --k-text-inverse: #ffffff;
+  --k-surface-base: lab(100 0 0);
+  --k-surface-muted: #faf9f7;
+  --k-surface-strong: #e6eefa;
+  --k-border: lab(90.952 0 0);
+  --k-border-muted: lab(84.92 0 0);
+  --k-focus: oklab(0.707999 -0.00000712276 0.0000166297 / 0.5);
+  --k-radius-card: 22px;
+  --k-radius-pill: 9999px;
+
+  background: var(--k-surface-base);
+  color: var(--k-text-primary);
+  color-scheme: light;
+  font-family: var(--font-manrope), ui-sans-serif, system-ui, sans-serif;
+}
+.kimia :focus-visible {
+  outline: 2px solid var(--k-focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 @layer utilities {
   .tabular-nums {
     font-variant-numeric: tabular-nums;

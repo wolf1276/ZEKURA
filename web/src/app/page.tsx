@@ -1,5 +1,5 @@
-import { TradePage } from "@/components/trade/trade-page";
+import { LaunchPage } from "@/components/launch/launch-page";
 
 export default function Page() {
-  return <TradePage />;
+  return <LaunchPage />;
 }
