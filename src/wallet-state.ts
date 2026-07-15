@@ -14,7 +14,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import type { NetworkId } from './network';
+import type { NetworkId } from './network.js';
 
 export const WALLET_STATE_DIR = '.midnight-wallet-state';
 export const WALLET_STATE_VERSION = 1 as const;

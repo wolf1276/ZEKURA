@@ -20,14 +20,14 @@ import {
   UnshieldedWallet,
 } from '@midnight-ntwrk/wallet-sdk-unshielded-wallet';
 
-import type { NetworkConfig, NetworkId } from './network';
+import type { NetworkConfig, NetworkId } from './network.js';
 import {
   CHILD_KINDS,
   loadWalletState,
   saveWalletState,
   type ChildKind,
   type PersistedWalletState,
-} from './wallet-state';
+} from './wallet-state.js';
 
 export { unshieldedToken };
 export type { PersistedWalletState };
@@ -37,7 +37,7 @@ export {
   clearWalletState,
   WALLET_STATE_DIR,
   WALLET_STATE_VERSION,
-} from './wallet-state';
+} from './wallet-state.js';
 
 function deriveKeys(seed: string) {
   const hdWallet = HDWallet.fromSeed(Buffer.from(seed, 'hex'));

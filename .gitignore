@@ -53,6 +53,12 @@ coverage/
 tmp/
 temp/
 
+# Matcher SQLite database
+matcher/data/
+*.sqlite
+*.sqlite3
+*.db
+
 # Midnight network state (per-network seeds, deploy addresses)
 .midnight-state.json
 

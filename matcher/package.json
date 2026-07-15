@@ -1,31 +1,23 @@
 {
-  "name": "zekura",
+  "name": "@zekura/matcher",
   "version": "1.0.0",
   "type": "module",
-  "description": "Zekura — a privacy-preserving exchange on Midnight. The public ledger stores only orderId, commitment, and state; the confidential order book (asset, amount, side, owner, price) lives off-chain with the Matcher.",
+  "description": "Zekura Matcher Server — the confidential off-chain order book and settlement engine for the Zekura exchange. Matches orders and submits settle() transactions against the already-deployed exchange.compact contract.",
   "author": "",
   "license": "MIT",
-  "workspaces": [
-    "matcher"
-  ],
   "scripts": {
-    "compile": "compact compile contracts/exchange.compact contracts/managed/exchange",
-    "build": "npx tsc --noEmit || true",
-    "setup": "npx tsx src/setup.ts",
-    "deploy": "npx tsx src/deploy.ts",
-    "cli": "npx tsx src/cli.ts",
-    "check-balance": "npx tsx src/check-balance.ts",
-    "network": "npx tsx src/network.ts",
-    "proof-server:start": "docker compose up -d",
-    "proof-server:stop": "docker compose down",
-    "clean": "rm -rf contracts/managed .midnight-state.json .midnight-wallet-state",
-    "test": "npm run test:exchange",
-    "test:exchange": "tsx tests/exchange.test.ts",
-    "test:e2e": "tsx scripts/e2e-check.ts"
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/matcher/src/index.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@midnight-ntwrk/compact-js": "2.5.0",
-    "rxjs": "^7.8.2",
     "@midnight-ntwrk/compact-runtime": "0.16.0",
     "@midnight-ntwrk/ledger-v8": "8.0.3",
     "@midnight-ntwrk/midnight-js-contracts": "4.0.4",
@@ -41,16 +33,27 @@
     "@midnight-ntwrk/wallet-sdk-hd": "3.0.1",
     "@midnight-ntwrk/wallet-sdk-shielded": "2.1.0",
     "@midnight-ntwrk/wallet-sdk-unshielded-wallet": "2.1.0",
-    "ws": "^8.20.0"
+    "better-sqlite3": "^12.11.1",
+    "fastify": "^5.10.0",
+    "pino": "^9.0.0",
+    "rxjs": "^7.8.2",
+    "ws": "^8.20.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.18.1",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^9.0.0",
+    "pino-pretty": "^13.0.0",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.3"
+    "typescript": "6.0.3",
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=22.0.0"
-  },
-  "keywords": ["midnight", "blockchain", "zero-knowledge", "privacy"]
+  }
 }
