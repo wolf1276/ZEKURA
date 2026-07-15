@@ -40,14 +40,24 @@ async function loadWalletInfo(
   api: ConnectedAPI,
   walletName: string,
 ): Promise<ConnectedWalletInfo> {
+  // Identity/config is local to the wallet and must succeed — without an
+  // address there's nothing to show. Balances round-trip to the indexer/node,
+  // so a transient backend hiccup rejects them with InternalError ("Request
+  // failed"); that must NOT abort an otherwise-authorized connection. Default
+  // them and let the poll loop (which re-runs loadWalletInfo every tick) fill
+  // in the real values once the backend responds.
+  // ponytail: default balances on failure; poll self-heals. Surface a
+  // connect-time balance error only if users report silently-stuck zeros.
+  const settle = <T,>(p: Promise<T>, fallback: T): Promise<T> =>
+    p.catch(() => fallback);
   const [configuration, connectionStatus, shieldedAddresses, unshieldedAddress, unshieldedBalances, dustBalance] =
     await Promise.all([
       api.getConfiguration(),
       api.getConnectionStatus(),
       api.getShieldedAddresses(),
       api.getUnshieldedAddress(),
-      api.getUnshieldedBalances(),
-      api.getDustBalance(),
+      settle(api.getUnshieldedBalances(), {} as Record<string, bigint>),
+      settle(api.getDustBalance(), { cap: 0n, balance: 0n }),
     ]);
   const networkId =
     connectionStatus.status === "connected" ? connectionStatus.networkId : configuration.networkId;
