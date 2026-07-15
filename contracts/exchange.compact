@@ -1,0 +1,195 @@
+pragma language_version >= 0.16;
+
+import CompactStandardLibrary;
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+export enum OrderState { OPEN, FILLED, CANCELLED, EXPIRED }
+
+export enum EventKind { ORDER_CREATED, ORDER_CANCELLED, ORDER_FILLED }
+
+// ---------------------------------------------------------------------------
+// Structs
+// ---------------------------------------------------------------------------
+
+// Public registry record. Only the commitment and lifecycle state are ever
+// stored on-ledger; the fields the commitment binds to (asset, price,
+// amount, owner, side) never appear here or anywhere else in this contract.
+export struct OrderRecord {
+  commitment: Bytes<32>,
+  state: OrderState
+}
+
+// Public settlement/lifecycle event. Written to the event log, never
+// carries confidential order data.
+export struct OrderEvent {
+  kind: EventKind,
+  orderId: Bytes<32>
+}
+
+// Private order payload. Never stored on-ledger. Reconstructed only inside
+// a circuit from witnesses supplied by whichever party is authorized to
+// reveal it (the owner's wallet for cancel/expire, the matcher for
+// settlement), and checked against the public commitment before it is
+// trusted for anything.
+struct OrderDetails {
+  asset: Either<Bytes<32>, Bytes<32> >,
+  isBuy: Boolean,
+  price: Uint<128>,
+  amount: Uint<128>,
+  owner: ZswapCoinPublicKey,
+  expiresAt: Uint<64>
+}
+
+// ---------------------------------------------------------------------------
+// Ledger
+// ---------------------------------------------------------------------------
+
+// Order Registry (Module 1): orderId -> { commitment, state }.
+export ledger orders: Map<Bytes<32>, OrderRecord>;
+
+// Replay Protection (Module 3): nullifier set of executed settlements.
+export ledger settledPairs: Set<Bytes<32>>;
+
+// Events (Module 4): append-only log keyed by a hash of (kind, orderId),
+// which is unique per order because each event kind can only ever be
+// recorded once for a given order (the state machine below enforces this).
+export ledger eventLog: Map<Bytes<32>, OrderEvent>;
+
+// ---------------------------------------------------------------------------
+// Witnesses
+// ---------------------------------------------------------------------------
+
+// Reveals the private fields committed to for a given order. For
+// cancelOrder/expireOrder this is provided by the owner's own wallet; for
+// settle this is provided by the matcher, which received the order's full
+// details off-chain when the wallet originally signed and disclosed it.
+witness orderDetails(orderId: Bytes<32>): OrderDetails;
+
+// Reveals the blinding factor used when the order's commitment was created.
+witness orderBlinding(orderId: Bytes<32>): Bytes<32>;
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+circuit recordEvent(kind: EventKind, orderId: Bytes<32>): [] {
+  const key = persistentHash<OrderEvent>(OrderEvent { kind: kind, orderId: orderId });
+  eventLog.insert(key, OrderEvent { kind: kind, orderId: orderId });
+}
+
+// Recomputes an order's commitment from its witnessed private details and
+// blinding factor, and asserts it matches the commitment on record. This is
+// the sole authorization mechanism in this contract: only a party that
+// actually knows the order's true details and blinding factor (i.e. the
+// owner, and whoever the owner's wallet chose to disclose them to) can
+// satisfy this check.
+circuit verifyOrderCommitment(orderId: Bytes<32>, commitment: Bytes<32>): OrderDetails {
+  const details = orderDetails(orderId);
+  const blinding = orderBlinding(orderId);
+  assert(
+    persistentCommit<OrderDetails>(details, blinding) == commitment,
+    "Order commitment mismatch"
+  );
+  return details;
+}
+
+// ---------------------------------------------------------------------------
+// Module 1: Order Registry
+// ---------------------------------------------------------------------------
+
+export circuit createOrder(orderId: Bytes<32>, commitment: Bytes<32>): [] {
+  const id = disclose(orderId);
+  const comm = disclose(commitment);
+
+  assert(!orders.member(id), "Order already exists");
+
+  orders.insert(id, OrderRecord { commitment: comm, state: OrderState.OPEN });
+
+  recordEvent(EventKind.ORDER_CREATED, id);
+}
+
+export circuit getOrder(orderId: Bytes<32>): OrderRecord {
+  const id = disclose(orderId);
+  assert(orders.member(id), "Order does not exist");
+  return orders.lookup(id);
+}
+
+export circuit cancelOrder(orderId: Bytes<32>): [] {
+  const id = disclose(orderId);
+
+  assert(orders.member(id), "Order does not exist");
+
+  const record = orders.lookup(id);
+  assert(record.state == OrderState.OPEN, "Order is not open");
+
+  const details = verifyOrderCommitment(id, record.commitment);
+  assert(
+    disclose(details.owner.bytes) == ownPublicKey().bytes,
+    "Caller is not the order owner"
+  );
+
+  orders.insert(id, OrderRecord { commitment: record.commitment, state: OrderState.CANCELLED });
+
+  recordEvent(EventKind.ORDER_CANCELLED, id);
+}
+
+export circuit expireOrder(orderId: Bytes<32>): [] {
+  const id = disclose(orderId);
+
+  assert(orders.member(id), "Order does not exist");
+
+  const record = orders.lookup(id);
+  assert(record.state == OrderState.OPEN, "Order is not open");
+
+  const details = verifyOrderCommitment(id, record.commitment);
+  assert(blockTimeGte(disclose(details.expiresAt)), "Order has not expired yet");
+
+  orders.insert(id, OrderRecord { commitment: record.commitment, state: OrderState.EXPIRED });
+}
+
+// ---------------------------------------------------------------------------
+// Module 2: Settlement
+// ---------------------------------------------------------------------------
+
+export circuit settle(buyOrderId: Bytes<32>, sellOrderId: Bytes<32>): [] {
+  const buyId = disclose(buyOrderId);
+  const sellId = disclose(sellOrderId);
+
+  assert(orders.member(buyId), "Buy order does not exist");
+  assert(orders.member(sellId), "Sell order does not exist");
+
+  const buyRecord = orders.lookup(buyId);
+  const sellRecord = orders.lookup(sellId);
+  assert(buyRecord.state == OrderState.OPEN, "Buy order is not open");
+  assert(sellRecord.state == OrderState.OPEN, "Sell order is not open");
+
+  // Replay protection: this exact pair may only ever settle once.
+  const settlementId = persistentHash<Vector<2, Bytes<32> > >([buyId, sellId]);
+  assert(!settledPairs.member(settlementId), "Settlement already executed");
+  settledPairs.insert(settlementId);
+
+  // Signature/authenticity check: recompute both commitments from witnessed
+  // details and verify them against the registry.
+  const buyDetails = verifyOrderCommitment(buyId, buyRecord.commitment);
+  const sellDetails = verifyOrderCommitment(sellId, sellRecord.commitment);
+
+  assert(buyDetails.isBuy, "Buy order is not a buy-side order");
+  assert(!sellDetails.isBuy, "Sell order is not a sell-side order");
+
+  assert(!blockTimeGte(disclose(buyDetails.expiresAt)), "Buy order has expired");
+  assert(!blockTimeGte(disclose(sellDetails.expiresAt)), "Sell order has expired");
+
+  // Settlement rules.
+  assert(buyDetails.asset == sellDetails.asset, "Asset mismatch between orders");
+  assert(buyDetails.amount == sellDetails.amount, "Amount mismatch between orders");
+  assert(buyDetails.price >= sellDetails.price, "Buy price does not cross sell price");
+
+  orders.insert(buyId, OrderRecord { commitment: buyRecord.commitment, state: OrderState.FILLED });
+  orders.insert(sellId, OrderRecord { commitment: sellRecord.commitment, state: OrderState.FILLED });
+
+  recordEvent(EventKind.ORDER_FILLED, buyId);
+  recordEvent(EventKind.ORDER_FILLED, sellId);
+}

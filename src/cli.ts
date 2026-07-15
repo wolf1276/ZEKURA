@@ -1,5 +1,12 @@
 /**
- * CLI for interacting with midnight-app contract
+ * CLI for interacting with the deployed Zekura exchange contract.
+ *
+ * Level 1 scope: read-only. createOrder/cancelOrder need a commitment
+ * computed off-chain from the order's private details + a blinding factor
+ * (see contracts/exchange.compact's orderDetails/orderBlinding witnesses) —
+ * that's wallet/Matcher client tooling, out of scope until the Matcher
+ * integration lands. This menu only exercises what's genuinely wired up:
+ * reading an order's public record and checking wallet balance.
  */
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
@@ -18,6 +25,7 @@ import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config
 import { resolveNetwork, getOrCreateSeed, getDeployment } from './network';
 import { createWallet, persistWalletState, unshieldedToken, type WalletContext } from './wallet';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
+import type { Contract as ExchangeContract, Witnesses } from '../contracts/managed/exchange/contract/index.js';
 
 // Enable WebSocket for GraphQL subscriptions
 // @ts-expect-error Required for wallet sync
@@ -27,7 +35,7 @@ const { network, config: networkConfig } = resolveNetwork();
 const SEED = getOrCreateSeed(network);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'hello-world');
+const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'exchange');
 
 // Load compiled contract
 const contractPath = path.join(zkConfigPath, 'contract', 'index.js');
@@ -38,12 +46,30 @@ if (!fs.existsSync(contractPath)) {
   process.exit(1);
 }
 
-const HelloWorld = await import(pathToFileURL(contractPath).href);
+const Exchange = await import(pathToFileURL(contractPath).href);
 
-const compiledContract = CompiledContract.make('hello-world', HelloWorld.Contract).pipe(
-  CompiledContract.withVacantWitnesses,
-  CompiledContract.withCompiledFileAssets(zkConfigPath),
-);
+// This CLI only calls the read-only getOrder circuit, which never touches
+// the orderDetails/orderBlinding witnesses (those are only needed by
+// cancelOrder/expireOrder/settle to re-verify a commitment). Real
+// implementations would throw if actually invoked from here.
+const exchangeWitnesses: Witnesses<undefined> = {
+  orderDetails: () => {
+    throw new Error('orderDetails witness not implemented in cli.ts — this menu is read-only (see file header).');
+  },
+  orderBlinding: () => {
+    throw new Error('orderBlinding witness not implemented in cli.ts — this menu is read-only (see file header).');
+  },
+};
+
+// The contract module is loaded via a runtime dynamic import (so we can
+// print a friendly "run npm run compile" error instead of a raw resolution
+// failure when contracts/managed/exchange doesn't exist yet), which makes
+// Exchange.Contract's inferred type `any`. Supplying the real generated
+// Contract type as an explicit type argument keeps compact-js's generic
+// inference for withWitnesses working despite that.
+const compiledContractBase = CompiledContract.make<ExchangeContract<undefined>>('exchange', Exchange.Contract);
+const compiledContractWithWitnesses = CompiledContract.withWitnesses(compiledContractBase, exchangeWitnesses);
+const compiledContract = CompiledContract.withCompiledFileAssets(compiledContractWithWitnesses, zkConfigPath);
 
 // ─── Providers ─────────────────────────────────────────────────────────────────
 
@@ -77,7 +103,7 @@ async function createProviders(walletCtx: WalletContext) {
 
   return {
     privateStateProvider: levelPrivateStateProvider({
-      privateStateStoreName: 'hello-world-state',
+      privateStateStoreName: 'exchange-state',
       accountId,
       privateStoragePasswordProvider: () => privateStatePassword,
     }),
@@ -93,7 +119,7 @@ async function createProviders(walletCtx: WalletContext) {
 
 async function main() {
   console.log('\n╔══════════════════════════════════════════════════════════════╗');
-  console.log('║                   midnight-app CLI                           ║');
+  console.log('║                      Zekura exchange CLI                     ║');
   console.log('╚══════════════════════════════════════════════════════════════╝\n');
 
   const rl = createInterface({ input: stdin, output: stdout });
@@ -160,22 +186,37 @@ async function main() {
     let running = true;
     while (running) {
       console.log('─── Menu ───────────────────────────────────────────────────────');
-      console.log('  1. Store a message');
-      console.log('  2. Read current message');
-      console.log('  3. Check wallet balance');
-      console.log('  4. Exit\n');
+      console.log('  1. Look up an order by ID');
+      console.log('  2. Check wallet balance');
+      console.log('  3. Exit\n');
 
       const choice = await rl.question('  Your choice: ');
 
       switch (choice.trim()) {
         case '1': {
-          const message = await rl.question('  Enter your message: ');
-          console.log('\n  Submitting transaction (this may take 30-60 seconds)...');
+          const idHex = (await rl.question('  Order ID (64 hex chars): ')).trim();
+          if (!/^[0-9a-fA-F]{64}$/.test(idHex)) {
+            console.log('\n  ❌ Order ID must be exactly 32 bytes (64 hex chars).\n');
+            break;
+          }
+          console.log('\n  Reading order from chain state (public read, no transaction)...');
           try {
-            const tx = await deployed.callTx.storeMessage(message);
-            console.log(`\n  ✅ Message stored: "${message}"`);
-            console.log(`  Transaction ID: ${tx.public.txId}`);
-            console.log(`  Block height: ${tx.public.blockHeight}\n`);
+            const contractState = await providers.publicDataProvider.queryContractState(deployment.address);
+            if (!contractState) {
+              console.log('\n  📋 No contract state found.\n');
+              break;
+            }
+            const orderId = Buffer.from(idHex, 'hex');
+            const ledgerState = Exchange.ledger(contractState.data);
+            if (!ledgerState.orders.member(orderId)) {
+              console.log('\n  📋 No order found with that ID.\n');
+              break;
+            }
+            const record = ledgerState.orders.lookup(orderId);
+            const stateName = Exchange.OrderState[record.state];
+            console.log(`\n  📋 Order ${idHex}`);
+            console.log(`     state:      ${stateName}`);
+            console.log(`     commitment: ${Buffer.from(record.commitment).toString('hex')}\n`);
           } catch (error) {
             console.error('\n  ❌ Failed:', error instanceof Error ? error.message : error);
           }
@@ -183,23 +224,6 @@ async function main() {
         }
 
         case '2': {
-          console.log('\n  Reading message from blockchain...');
-          try {
-            const contractState = await providers.publicDataProvider.queryContractState(deployment.address);
-            if (contractState) {
-              const ledgerState = HelloWorld.ledger(contractState.data);
-              const message = Buffer.from(ledgerState.message).toString();
-              console.log(`\n  📋 Current message: "${message}"\n`);
-            } else {
-              console.log('\n  📋 No message found (contract state empty)\n');
-            }
-          } catch (error) {
-            console.error('\n  ❌ Failed:', error instanceof Error ? error.message : error);
-          }
-          break;
-        }
-
-        case '3': {
           console.log('\n  Checking balance...');
           const currentState = await walletCtx.wallet.waitForSyncedState();
           const currentBalance = currentState.unshielded.balances[unshieldedToken().raw] ?? 0n;
@@ -209,13 +233,13 @@ async function main() {
           break;
         }
 
-        case '4':
+        case '3':
           running = false;
           console.log('\n  👋 Goodbye!\n');
           break;
 
         default:
-          console.log('\n  ❌ Invalid choice. Please enter 1-4.\n');
+          console.log('\n  ❌ Invalid choice. Please enter 1-3.\n');
       }
     }
 

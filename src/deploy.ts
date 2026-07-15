@@ -1,5 +1,6 @@
 /**
- * Deploy midnight-app contract to a Midnight network (undeployed by default; use --network preview|preprod for public networks).
+ * Deploy the Zekura exchange contract to a Midnight network (undeployed by
+ * default; use --network preview|preprod for public networks).
  *
  * Non-interactive: scaffold → npm run setup runs straight through.
  * No readline prompts, no .midnight-seed file.
@@ -19,6 +20,7 @@ import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-p
 import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
 import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
+import type { Contract as ExchangeContract } from '../contracts/managed/exchange/contract/index.js';
 
 // @ts-expect-error Required for wallet sync
 globalThis.WebSocket = WebSocket;
@@ -62,7 +64,7 @@ async function waitForProofServer(maxAttempts = 60, delayMs = 2000): Promise<boo
 // ─── Compiled contract loading ─────────────────────────────────────────────────
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'hello-world');
+const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'exchange');
 const contractPath = path.join(zkConfigPath, 'contract', 'index.js');
 
 if (!fs.existsSync(contractPath)) {
@@ -70,12 +72,31 @@ if (!fs.existsSync(contractPath)) {
   process.exit(1);
 }
 
-const HelloWorld = await import(pathToFileURL(contractPath).href);
+const Exchange = await import(pathToFileURL(contractPath).href);
 
-const compiledContract = CompiledContract.make('hello-world', HelloWorld.Contract).pipe(
-  CompiledContract.withVacantWitnesses,
-  CompiledContract.withCompiledFileAssets(zkConfigPath),
-);
+// Deployment only posts the contract's initialState — it never executes a
+// circuit — so the witnesses are never actually invoked here. They still
+// have to be supplied to satisfy CompiledContract's type-level requirement
+// that every witness the contract declares has an implementation somewhere.
+// orderDetails/orderBlinding are the wallet/Matcher's private data; assembling
+// them is client tooling out of scope for Level 1 (see src/cli.ts).
+const exchangeWitnesses = {
+  orderDetails: () => {
+    throw new Error('orderDetails witness not implemented in deploy.ts (deployment does not execute circuits).');
+  },
+  orderBlinding: () => {
+    throw new Error('orderBlinding witness not implemented in deploy.ts (deployment does not execute circuits).');
+  },
+};
+
+// The contract module is loaded via a runtime dynamic import (so the
+// "not compiled" check above can run first), which makes Exchange.Contract's
+// inferred type `any`. Supplying the real generated Contract type as an
+// explicit type argument keeps compact-js's generic inference for
+// withWitnesses working despite that.
+const compiledContractBase = CompiledContract.make<ExchangeContract<undefined>>('exchange', Exchange.Contract);
+const compiledContractWithWitnesses = CompiledContract.withWitnesses(compiledContractBase, exchangeWitnesses);
+const compiledContract = CompiledContract.withCompiledFileAssets(compiledContractWithWitnesses, zkConfigPath);
 
 // ─── Providers ─────────────────────────────────────────────────────────────────
 
@@ -108,7 +129,7 @@ async function createProviders(walletCtx: WalletContext) {
 
   return {
     privateStateProvider: levelPrivateStateProvider({
-      privateStateStoreName: 'hello-world-state',
+      privateStateStoreName: 'exchange-state',
       accountId,
       privateStoragePasswordProvider: () => privateStatePassword,
     }),
@@ -124,7 +145,7 @@ async function createProviders(walletCtx: WalletContext) {
 
 async function main() {
   console.log('\n╔══════════════════════════════════════════════════════════════╗');
-  console.log(`║  Deploy midnight-app to ${network}`);
+  console.log(`║  Deploy Zekura exchange to ${network}`);
   console.log('╚══════════════════════════════════════════════════════════════╝\n');
 
   const seed = SEED;
@@ -221,13 +242,31 @@ async function main() {
     // with N signatures matching N inputs. Do NOT call signRecipe again — that
     // would double-sign and the chain rejects with InputsSignaturesLengthMismatch
     // (Custom error 192). Matches upstream example-counter and example-bboard.
-    const recipe = await walletCtx.wallet.registerNightUtxosForDustGeneration(
-      unregisteredUtxos,
-      walletCtx.unshieldedKeystore.getPublicKey(),
-      (payload) => walletCtx.unshieldedKeystore.signData(payload),
-    );
-    const finalized = await walletCtx.wallet.finalizeRecipe(recipe);
-    await walletCtx.wallet.submitTransaction(finalized);
+    //
+    // The RPC websocket can still be settling right after waitForSyncedState()
+    // resolves, so the first submitTransaction attempt can race a
+    // "disconnected ... Normal Closure" close on the node's end. Retry with a
+    // short pre-pause, mirroring the retry loop already used below for
+    // deployContract.
+    const REGISTER_MAX_RETRIES = 5;
+    const REGISTER_RETRY_DELAY_MS = 3000;
+    for (let attempt = 1; attempt <= REGISTER_MAX_RETRIES; attempt++) {
+      await new Promise((r) => setTimeout(r, REGISTER_RETRY_DELAY_MS));
+      try {
+        const recipe = await walletCtx.wallet.registerNightUtxosForDustGeneration(
+          unregisteredUtxos,
+          walletCtx.unshieldedKeystore.getPublicKey(),
+          (payload) => walletCtx.unshieldedKeystore.signData(payload),
+        );
+        const finalized = await walletCtx.wallet.finalizeRecipe(recipe);
+        await walletCtx.wallet.submitTransaction(finalized);
+        break;
+      } catch (err: any) {
+        const msg = err?.message || String(err);
+        if (attempt === REGISTER_MAX_RETRIES) throw err;
+        console.log(`  Attempt ${attempt} failed (${msg}); retrying in ${REGISTER_RETRY_DELAY_MS / 1000}s...`);
+      }
+    }
   }
 
   if (dustState.dust.balance(new Date()) === 0n) {

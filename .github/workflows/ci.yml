@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Official install method per https://docs.midnight.network/getting-started/installation
+      - name: Install Compact toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf https://github.com/midnightntwrk/compact/releases/latest/download/compact-installer.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Pin Compact compiler version
+        run: compact update 0.31.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile contract
+        run: npm run compile
+
+      - name: Typecheck
+        run: npm run build
+
+      - name: Run offline test suite
+        run: npm run test

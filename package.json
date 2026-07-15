@@ -1,12 +1,12 @@
 {
-  "name": "midnight-app",
+  "name": "zekura",
   "version": "1.0.0",
   "type": "module",
-  "description": "A Midnight Network application created with create-mn-app",
+  "description": "Zekura — a privacy-preserving exchange on Midnight. The public ledger stores only orderId, commitment, and state; the confidential order book (asset, amount, side, owner, price) lives off-chain with the Matcher.",
   "author": "",
   "license": "MIT",
   "scripts": {
-    "compile": "compact compile contracts/hello-world.compact contracts/managed/hello-world",
+    "compile": "compact compile contracts/exchange.compact contracts/managed/exchange",
     "build": "npx tsc --noEmit || true",
     "setup": "npx tsx src/setup.ts",
     "deploy": "npx tsx src/deploy.ts",
@@ -16,7 +16,8 @@
     "proof-server:start": "docker compose up -d",
     "proof-server:stop": "docker compose down",
     "clean": "rm -rf contracts/managed .midnight-state.json .midnight-wallet-state",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run test:exchange",
+    "test:exchange": "tsx tests/exchange.test.ts",
     "test:e2e": "tsx scripts/e2e-check.ts"
   },
   "dependencies": {

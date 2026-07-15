@@ -1,5 +1,5 @@
 /**
- * End-to-end smoke check for midnight-app.
+ * End-to-end smoke check for the Zekura exchange contract.
  *
  * Reconnects to the deployed contract, reads its ledger state, and exits 0
  * on success. Used by `npm run test:e2e` and by the project's CI workflows.
@@ -17,6 +17,7 @@ import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config
 import { resolveNetwork, getOrCreateSeed, getDeployment } from '../src/network';
 import { createWallet, persistWalletState } from '../src/wallet';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
+import type { Contract as ExchangeContract } from '../contracts/managed/exchange/contract/index.js';
 
 // @ts-expect-error wallet sync requires WebSocket
 globalThis.WebSocket = WebSocket;
@@ -48,14 +49,26 @@ async function main() {
 
   // 2. Build wallet and providers
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'hello-world');
+  const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'exchange');
   const contractPath = path.join(zkConfigPath, 'contract', 'index.js');
   if (!fs.existsSync(contractPath)) fail('Compiled contract missing — run `npm run compile`.');
-  const HelloWorld = await import(pathToFileURL(contractPath).href);
-  const compiledContract = CompiledContract.make('hello-world', HelloWorld.Contract).pipe(
-    CompiledContract.withVacantWitnesses,
-    CompiledContract.withCompiledFileAssets(zkConfigPath),
-  );
+  const Exchange = await import(pathToFileURL(contractPath).href);
+  // Read-only: findDeployedContract/queryContractState never execute a
+  // circuit, so these witnesses are never actually invoked (see deploy.ts).
+  const exchangeWitnesses = {
+    orderDetails: () => {
+      throw new Error('orderDetails witness not implemented in e2e-check.ts (read-only check does not execute circuits).');
+    },
+    orderBlinding: () => {
+      throw new Error('orderBlinding witness not implemented in e2e-check.ts (read-only check does not execute circuits).');
+    },
+  };
+  // Dynamic import makes Exchange.Contract's inferred type `any`; supplying
+  // the real generated Contract type as an explicit type argument keeps
+  // compact-js's generic inference for withWitnesses working despite that.
+  const compiledContractBase = CompiledContract.make<ExchangeContract<undefined>>('exchange', Exchange.Contract);
+  const compiledContractWithWitnesses = CompiledContract.withWitnesses(compiledContractBase, exchangeWitnesses);
+  const compiledContract = CompiledContract.withCompiledFileAssets(compiledContractWithWitnesses, zkConfigPath);
 
   const walletCtx = await createWallet({ network, networkConfig, seed: SEED });
   const state = await walletCtx.wallet.waitForSyncedState();
@@ -77,7 +90,7 @@ async function main() {
 
   const providers = {
     privateStateProvider: levelPrivateStateProvider({
-      privateStateStoreName: 'hello-world-state',
+      privateStateStoreName: 'exchange-state',
       accountId: walletCtx.unshieldedKeystore.getBech32Address().toString(),
       // SDK requires ≥16 chars. e2e-check is read-only so we don't expose
       // the env-var override here — match the deploy script's local-devnet default.
