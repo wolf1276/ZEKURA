@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { AlertTriangle, Loader2, Menu, WalletMinimal } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -11,35 +12,43 @@ import { NetworkSwitcher } from "@/network/NetworkSwitcher";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
-  { label: "Dashboard", href: "#" },
-  { label: "Trade", href: "#", active: true },
-  { label: "My Orders", href: "#" },
-  { label: "Activity", href: "#" },
-  { label: "Settings", href: "#" },
+  { label: "Dashboard", href: "/dashboard" },
+  { label: "Trade", href: "/" },
+  { label: "My Orders", href: "/orders" },
+  { label: "Activity", href: "/activity" },
+  { label: "Settings", href: "/settings" },
 ];
 
+function isActive(href: string, pathname: string) {
+  return href === "/" ? pathname === "/" : pathname.startsWith(href);
+}
+
 function NavLinks({ className }: { className?: string }) {
+  const pathname = usePathname();
   return (
     <nav className={cn("flex items-center gap-1", className)}>
-      {NAV_ITEMS.map((item) => (
-        <Link
-          key={item.label}
-          href={item.href}
-          aria-current={item.active ? "page" : undefined}
-          className={cn(
-            "relative rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-            item.active
-              ? "text-foreground"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {item.label}
-          {item.active && (
-            <span className="absolute inset-x-3 -bottom-[1px] h-px bg-primary" />
-          )}
-        </Link>
-      ))}
+      {NAV_ITEMS.map((item) => {
+        const active = isActive(item.href, pathname);
+        return (
+          <Link
+            key={item.label}
+            href={item.href}
+            aria-current={active ? "page" : undefined}
+            className={cn(
+              "relative rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+              active
+                ? "text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {item.label}
+            {active && (
+              <span className="absolute inset-x-3 -bottom-[1px] h-px bg-primary" />
+            )}
+          </Link>
+        );
+      })}
     </nav>
   );
 }
@@ -92,6 +101,7 @@ function WalletPill() {
 
 export function Navbar() {
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
 
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
@@ -139,7 +149,7 @@ export function Navbar() {
                     onClick={() => setOpen(false)}
                     className={cn(
                       "rounded-md px-3 py-2 text-sm font-medium",
-                      item.active
+                      isActive(item.href, pathname)
                         ? "bg-primary/10 text-primary"
                         : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
                     )}
