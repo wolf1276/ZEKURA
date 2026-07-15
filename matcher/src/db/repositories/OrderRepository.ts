@@ -91,6 +91,14 @@ export class OrderRepository {
     return rows.map(rowToOrder);
   }
 
+  /** OPEN orders for one asset (see types/Asset.ts's assetKey) — the read path behind GET /orderbook. Uses the same `idx_orders_asset`/`idx_orders_status` indexes as listOpen(). */
+  listOpenByAssetKey(assetKey: string): Order[] {
+    const rows = this.db
+      .prepare("SELECT * FROM orders WHERE status = 'OPEN' AND asset_key = ? ORDER BY created_at ASC")
+      .all(assetKey) as OrderRow[];
+    return rows.map(rowToOrder);
+  }
+
   /**
    * Compare-and-swap status transition: only applies if the order's current
    * status is one of `expectedCurrentStatuses` (when given). Returns true

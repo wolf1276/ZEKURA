@@ -65,6 +65,22 @@ export class MatchRepository {
     return row ? rowToMatch(row, asset) : undefined;
   }
 
+  /** Most recent trades for one asset, newest first — the read path behind GET /trades. Requires `asset` for the same reason findById does: the matches table only stores the partition key, not the full tuple. */
+  listRecentByAssetKey(assetKeyValue: string, limit: number, asset: Match['asset']): Match[] {
+    const rows = this.db
+      .prepare('SELECT * FROM matches WHERE asset_key = ? ORDER BY matched_at DESC LIMIT ?')
+      .all(assetKeyValue, limit) as MatchRow[];
+    return rows.map((row) => rowToMatch(row, asset));
+  }
+
+  /** Trades for one asset at or after `sinceMs`, oldest first — the read path behind GET /stats's rolling window. */
+  listSinceByAssetKey(assetKeyValue: string, sinceMs: number, asset: Match['asset']): Match[] {
+    const rows = this.db
+      .prepare('SELECT * FROM matches WHERE asset_key = ? AND matched_at >= ? ORDER BY matched_at ASC')
+      .all(assetKeyValue, sinceMs) as MatchRow[];
+    return rows.map((row) => rowToMatch(row, asset));
+  }
+
   /**
    * Matches whose buy or sell order currently has one of `statuses` — used
    * at startup to re-enqueue settlements that were still in flight (order

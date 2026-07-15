@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { OrderRepository } from '../../src/db/repositories/OrderRepository.js';
 import { openDatabase } from '../../src/db/sqlite.js';
+import { assetKey } from '../../src/types/Asset.js';
 import type { Order } from '../../src/types/Order.js';
 
 function hexFill(byte: string): string {
@@ -70,6 +71,17 @@ describe('OrderRepository', () => {
     repo.insert(sampleOrder({ id: hexFill('01'), status: 'FILLED' }));
     repo.insert(sampleOrder({ id: hexFill('02'), status: 'OPEN' }));
     expect(repo.listByStatus('FILLED').map((o) => o.id)).toEqual([hexFill('01')]);
+  });
+
+  it('listOpenByAssetKey returns only OPEN orders for that asset, oldest first', () => {
+    const assetA = { isLeft: true, left: hexFill('aa'), right: hexFill('00') };
+    const assetB = { isLeft: true, left: hexFill('bb'), right: hexFill('00') };
+    repo.insert(sampleOrder({ id: hexFill('01'), asset: assetA, createdAt: 200, status: 'OPEN' }));
+    repo.insert(sampleOrder({ id: hexFill('02'), asset: assetA, createdAt: 100, status: 'OPEN' }));
+    repo.insert(sampleOrder({ id: hexFill('03'), asset: assetA, createdAt: 150, status: 'CANCELLED' }));
+    repo.insert(sampleOrder({ id: hexFill('04'), asset: assetB, createdAt: 50, status: 'OPEN' }));
+    const open = repo.listOpenByAssetKey(assetKey(assetA));
+    expect(open.map((o) => o.id)).toEqual([hexFill('02'), hexFill('01')]);
   });
 
   describe('updateStatus (compare-and-swap)', () => {

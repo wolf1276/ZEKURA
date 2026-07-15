@@ -9,24 +9,58 @@ import { MarketInsightsPanel } from "@/components/trade/market-insights";
 import { TradePanel } from "@/components/trade/trade-panel";
 import { RecentOrders } from "@/components/trade/recent-orders";
 import { OrderStatusTimeline } from "@/components/trade/order-status-timeline";
-import { DEFAULT_PAIR, getMarketInsights } from "@/lib/mock/market";
+import { DEFAULT_PAIR } from "@/lib/mock/market";
+import { deriveMarketInsights } from "@/lib/marketInsights";
+import { useMarketData } from "@/hooks/use-market-data";
 import { matcher } from "@/services/matcher/matcherClient";
-import type { AssetPair, Order } from "@/lib/types";
+import type { AssetPair, MarketInsights, Order } from "@/lib/types";
 
-const MID_PRICES: Record<string, number> = {
+// Used only until the market has any real trade/quote data for a pair (a
+// cold-start book with no resting orders and no trade history yet) — once
+// useMarketData reports a real lastPrice or a best bid/ask, that always
+// wins. Never shown as a live/traded price; the chart's own footer already
+// discloses "Reference price line — oracle feed, not an order book".
+const FALLBACK_MID_PRICES: Record<string, number> = {
   "tDUST-tUSD": 0.84,
   "tNIGHT-tUSD": 1.62,
+};
+
+const DEFAULT_INSIGHTS: MarketInsights = {
+  suggestedBuy: { low: 0, high: 0 },
+  suggestedSell: { low: 0, high: 0 },
+  liquidityZones: {
+    strong: { low: 0, high: 0 },
+    moderate: { low: 0, high: 0 },
+    emerging: { low: 0, high: 0 },
+  },
+  activityLevel: "Low",
+  volatility: "Low",
+  estimatedSettlementSeconds: { low: 30, high: 90 },
 };
 
 export function TradePage() {
   const [pair, setPair] = useState<AssetPair>(DEFAULT_PAIR);
   const [orders, setOrders] = useState<Order[]>([]);
   const [trackedOrderId, setTrackedOrderId] = useState<string | null>(null);
+  const marketData = useMarketData(pair);
 
   useEffect(() => matcher.subscribe(setOrders), []);
 
-  const midPrice = MID_PRICES[pair.id] ?? 1;
-  const insights = useMemo(() => getMarketInsights(midPrice), [midPrice]);
+  const midPrice = useMemo(() => {
+    const lastPrice = marketData.stats?.lastPrice ? Number(marketData.stats.lastPrice) : null;
+    if (lastPrice) return lastPrice;
+    const bestBid = marketData.orderBook?.bids[0] ? Number(marketData.orderBook.bids[0].price) : null;
+    const bestAsk = marketData.orderBook?.asks[0] ? Number(marketData.orderBook.asks[0].price) : null;
+    if (bestBid !== null && bestAsk !== null) return (bestBid + bestAsk) / 2;
+    return bestBid ?? bestAsk ?? FALLBACK_MID_PRICES[pair.id] ?? 1;
+  }, [marketData.stats, marketData.orderBook, pair.id]);
+
+  const change24h = marketData.stats?.changePct ?? 0;
+
+  const insights = useMemo(
+    () => (marketData.orderBook && marketData.stats ? deriveMarketInsights(marketData.orderBook, marketData.stats) : DEFAULT_INSIGHTS),
+    [marketData.orderBook, marketData.stats],
+  );
   const trackedOrder = orders.find((o) => o.id === trackedOrderId) ?? null;
 
   const handleOrderCreated = useCallback((order: Order) => {
@@ -44,7 +78,7 @@ export function TradePage() {
         pair={pair}
         onPairChange={setPair}
         midPrice={midPrice}
-        change24h={2.1}
+        change24h={change24h}
         volatility={insights.volatility}
         activityLevel={insights.activityLevel}
       />

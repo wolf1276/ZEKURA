@@ -5,6 +5,7 @@ import { MatchRepository } from '../../src/db/repositories/MatchRepository.js';
 import { OrderRepository } from '../../src/db/repositories/OrderRepository.js';
 import { openDatabase } from '../../src/db/sqlite.js';
 import type { Match } from '../../src/matcher/Match.js';
+import { assetKey } from '../../src/types/Asset.js';
 import type { Order } from '../../src/types/Order.js';
 
 function hexFill(byte: string): string {
@@ -86,5 +87,21 @@ describe('MatchRepository', () => {
   it('listByOrderStatus returns [] for an empty status list without querying', () => {
     matchRepo.insert(sampleMatch());
     expect(matchRepo.listByOrderStatus([])).toEqual([]);
+  });
+
+  it('listRecentByAssetKey returns trades for that asset, newest first, capped at limit', () => {
+    matchRepo.insert(sampleMatch({ id: 'm1', matchedAt: 100 }));
+    matchRepo.insert(sampleMatch({ id: 'm2', matchedAt: 300 }));
+    matchRepo.insert(sampleMatch({ id: 'm3', matchedAt: 200 }));
+    const recent = matchRepo.listRecentByAssetKey(assetKey(ASSET), 2, ASSET);
+    expect(recent.map((m) => m.id)).toEqual(['m2', 'm3']);
+  });
+
+  it('listSinceByAssetKey returns trades at or after the cutoff, oldest first', () => {
+    matchRepo.insert(sampleMatch({ id: 'm1', matchedAt: 100 }));
+    matchRepo.insert(sampleMatch({ id: 'm2', matchedAt: 300 }));
+    matchRepo.insert(sampleMatch({ id: 'm3', matchedAt: 200 }));
+    const since = matchRepo.listSinceByAssetKey(assetKey(ASSET), 200, ASSET);
+    expect(since.map((m) => m.id)).toEqual(['m3', 'm2']);
   });
 });

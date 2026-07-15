@@ -12,7 +12,8 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { WalletCard } from "@/components/trade/wallet-card";
 import { useSubmitOrder } from "@/hooks/use-submit-order";
-import { useWallet } from "@/hooks/use-wallet";
+import { useWallet } from "@/wallet/walletHooks";
+import { useNetworkContext } from "@/network/networkContext";
 import { ASSET_PAIRS } from "@/lib/mock/market";
 import { formatAmount } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -36,6 +37,7 @@ export function TradePanel({
   onOrderCreated,
 }: TradePanelProps) {
   const wallet = useWallet();
+  const { switching: networkSwitching } = useNetworkContext();
   const { state: submitState, submit, reset: resetSubmit } = useSubmitOrder();
 
   const [side, setSide] = useState<OrderSide>("BUY");
@@ -63,7 +65,7 @@ export function TradePanel({
   const affordable =
     side === "BUY" ? cost + fee <= availableBalance : parsedAmount <= availableBalance;
 
-  const canSubmit = isAmountValid && isPriceValid && affordable && !submitting;
+  const canSubmit = isAmountValid && isPriceValid && affordable && !submitting && !networkSwitching;
 
   const sliderValue = useMemo(() => {
     if (side === "SELL") {
@@ -93,7 +95,7 @@ export function TradePanel({
 
   async function handleSubmit() {
     if (!wallet.isConnected) {
-      wallet.connect();
+      wallet.openModal();
       return;
     }
     if (!canSubmit) return;
@@ -335,6 +337,17 @@ export function TradePanel({
             >
               <WalletMinimal className="size-4" />
               Connect Wallet
+            </motion.span>
+          ) : networkSwitching ? (
+            <motion.span
+              key="network-switching"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex items-center gap-2"
+            >
+              <Loader2 className="size-4 animate-spin" />
+              Switching Network
             </motion.span>
           ) : submitting ? (
             <motion.span

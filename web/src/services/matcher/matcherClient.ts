@@ -57,11 +57,13 @@ const WS_KIND_TO_ACTIVITY: Partial<Record<MatcherWsMessage["type"], ActivityKind
 
 type OrderListener = (orders: Order[]) => void;
 type ActivityListener = (event: ActivityEvent) => void;
+type MessageListener = (message: MatcherWsMessage) => void;
 
 class MatcherClient {
   private orders = new Map<string, Order>();
   private orderListeners = new Set<OrderListener>();
   private activityListeners = new Set<ActivityListener>();
+  private messageListeners = new Set<MessageListener>();
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private started = false;
@@ -81,6 +83,13 @@ class MatcherClient {
     this.ensureStarted();
     this.activityListeners.add(listener);
     return () => this.activityListeners.delete(listener);
+  }
+
+  /** Raw WS messages, for consumers that need more than the order-list projection this class otherwise exposes — e.g. hooks/use-market-data.ts, which needs order.matched's price/amount for a live trade tape. */
+  subscribeMessages(listener: MessageListener): () => void {
+    this.ensureStarted();
+    this.messageListeners.add(listener);
+    return () => this.messageListeners.delete(listener);
   }
 
   async cancelOrder(id: string): Promise<void> {
@@ -140,6 +149,8 @@ class MatcherClient {
   }
 
   private handleMessage(message: MatcherWsMessage) {
+    for (const listener of this.messageListeners) listener(message);
+
     switch (message.type) {
       case "order.created":
       case "order.cancelled":

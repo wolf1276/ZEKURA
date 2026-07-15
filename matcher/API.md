@@ -80,6 +80,61 @@ Removes the order from the Matcher's book/DB (`OPEN -> CANCELLED`) — **does no
 
 **`200 OK`:** `{ "orders": [ /* Order objects, all status OPEN, oldest first */ ] }`
 
+## `GET /orderbook`
+
+Live snapshot of resting `OPEN` orders for one asset, aggregated by price level (one order's `amount` is added to any other resting order at the same price). This is a snapshot only — after the initial fetch, a client is expected to keep it current itself from the `order.created`/`order.cancelled`/`order.expired`/`order.matched` WS events below (each carries the full order, including `side`/`price`/`amount`), rather than repolling. There is no separate orderbook WS message type.
+
+**Query:** `isLeft` (`"true"` or `"false"`), `left`, `right` (64 hex chars each — the `Asset` tuple).
+
+**`200 OK`:**
+
+```jsonc
+{
+  "asset": { "isLeft": true, "left": "64 hex", "right": "64 hex" },
+  "bids": [{ "price": "900", "amount": "15", "orderCount": 2 }],  // highest price first
+  "asks": [{ "price": "1200", "amount": "20", "orderCount": 1 }]  // lowest price first
+}
+```
+
+**Errors:** `400 validation_failed` (bad/missing query params).
+
+## `GET /trades`
+
+Recent trades (fills) for one asset, newest first — each is a persisted `Match`. Same "fetch once, then live-update from WS" pattern as `/orderbook`: keep the tape current from `order.matched` events for that asset.
+
+**Query:** `isLeft`, `left`, `right` (as above), `limit` (optional, default `50`, `1`-`500`).
+
+**`200 OK`:**
+
+```jsonc
+{ "trades": [{ "id": "...", "asset": {...}, "price": "1100", "amount": "5", "matchedAt": 1700000002000 }] }
+```
+
+**Errors:** `400 validation_failed`.
+
+## `GET /stats`
+
+Rolling-window stats for one asset, computed on read from persisted matches — there is no separate candle/history table, so this always reflects exactly the trades within the window (default 24h) as of the request.
+
+**Query:** `isLeft`, `left`, `right` (as above), `windowMs` (optional, default `86400000` [24h], capped at 7 days).
+
+**`200 OK`:**
+
+```jsonc
+{
+  "asset": { "isLeft": true, "left": "64 hex", "right": "64 hex" },
+  "lastPrice": "1100",     // most recent trade's price in the window, or null if none
+  "openPrice": "1000",     // earliest trade's price in the window, or null if none
+  "high": "1100",
+  "low": "1000",
+  "volumeBase": "15",      // sum of `amount` (base-asset units) across the window
+  "tradeCount": 2,
+  "changePct": 10          // (lastPrice - openPrice) / openPrice * 100, or null if no trades / openPrice is 0
+}
+```
+
+**Errors:** `400 validation_failed`.
+
 ## `GET /health`
 
 **`200 OK`:** `{ "status": "ok", "uptimeSeconds": 123, "timestamp": "2026-07-15T12:00:00.000Z" }`

@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { registerHealthRoutes } from './api/health.js';
+import { registerMarketRoutes } from './api/market.js';
 import { registerOrderRoutes } from './api/orders.js';
 import type { OrderService } from './services/OrderService.js';
 
@@ -15,6 +16,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
 
   registerHealthRoutes(app);
   registerOrderRoutes(app, options.orderService);
+  registerMarketRoutes(app, options.orderService);
 
   app.setErrorHandler((error, request, reply) => {
     request.log.error({ error }, 'unhandled request error');

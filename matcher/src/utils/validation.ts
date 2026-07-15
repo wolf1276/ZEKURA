@@ -52,4 +52,22 @@ export const orderIdParamSchema = z.object({
   id: hex32Schema,
 });
 
+/** Query-string form of assetSchema — GET requests have no JSON body, so `isLeft` travels as the string "true"/"false" instead of a boolean. */
+export const assetQuerySchema = z.object({
+  isLeft: z.enum(['true', 'false']).transform((v) => v === 'true'),
+  left: hex32Schema,
+  right: hex32Schema,
+});
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export const tradesQuerySchema = assetQuerySchema.extend({
+  limit: z.coerce.number().int().min(1).max(500).default(50),
+});
+
+export const statsQuerySchema = assetQuerySchema.extend({
+  /** Rolling window size, defaulting to 24h; capped at 7 days to bound the scan over `matches`. */
+  windowMs: z.coerce.number().int().min(1000).max(7 * DAY_MS).default(DAY_MS),
+});
+
 export { hex32Schema };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createOrderSchema, orderIdParamSchema } from '../../src/utils/validation.js';
+import { assetQuerySchema, createOrderSchema, orderIdParamSchema, statsQuerySchema, tradesQuerySchema } from '../../src/utils/validation.js';
 
 /** `byte` must be exactly 2 hex chars; repeats it to a full 32-byte (64 char) hex string. */
 function hexFill(byte: string): string {
@@ -80,5 +80,61 @@ describe('orderIdParamSchema', () => {
 
   it('rejects a malformed id param', () => {
     expect(orderIdParamSchema.safeParse({ id: 'short' }).success).toBe(false);
+  });
+});
+
+describe('assetQuerySchema', () => {
+  const base = { left: hexFill('aa'), right: hexFill('bb') };
+
+  it('coerces the string "true"/"false" to a boolean', () => {
+    const trueResult = assetQuerySchema.safeParse({ ...base, isLeft: 'true' });
+    expect(trueResult.success).toBe(true);
+    if (trueResult.success) expect(trueResult.data.isLeft).toBe(true);
+
+    const falseResult = assetQuerySchema.safeParse({ ...base, isLeft: 'false' });
+    expect(falseResult.success).toBe(true);
+    if (falseResult.success) expect(falseResult.data.isLeft).toBe(false);
+  });
+
+  it('rejects a non-boolean-string isLeft', () => {
+    expect(assetQuerySchema.safeParse({ ...base, isLeft: 'yes' }).success).toBe(false);
+  });
+
+  it('rejects a malformed hex field', () => {
+    expect(assetQuerySchema.safeParse({ ...base, isLeft: 'true', left: 'short' }).success).toBe(false);
+  });
+});
+
+describe('tradesQuerySchema', () => {
+  const base = { isLeft: 'true', left: hexFill('aa'), right: hexFill('bb') };
+
+  it('defaults limit to 50', () => {
+    const result = tradesQuerySchema.safeParse(base);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.limit).toBe(50);
+  });
+
+  it('accepts a limit within [1, 500]', () => {
+    expect(tradesQuerySchema.safeParse({ ...base, limit: '1' }).success).toBe(true);
+    expect(tradesQuerySchema.safeParse({ ...base, limit: '500' }).success).toBe(true);
+  });
+
+  it('rejects a limit outside [1, 500]', () => {
+    expect(tradesQuerySchema.safeParse({ ...base, limit: '0' }).success).toBe(false);
+    expect(tradesQuerySchema.safeParse({ ...base, limit: '501' }).success).toBe(false);
+  });
+});
+
+describe('statsQuerySchema', () => {
+  const base = { isLeft: 'true', left: hexFill('aa'), right: hexFill('bb') };
+
+  it('defaults windowMs to 24 hours', () => {
+    const result = statsQuerySchema.safeParse(base);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.windowMs).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it('rejects a windowMs beyond the 7-day cap', () => {
+    expect(statsQuerySchema.safeParse({ ...base, windowMs: String(8 * 24 * 60 * 60 * 1000) }).success).toBe(false);
   });
 });

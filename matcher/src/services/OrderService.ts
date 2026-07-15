@@ -3,7 +3,10 @@ import type { OrderRepository } from '../db/repositories/OrderRepository.js';
 import type { Match } from '../matcher/Match.js';
 import type { MatchingEngine } from '../matcher/MatchingEngine.js';
 import type { OrderBook } from '../orderbook/OrderBook.js';
+import { buildOrderBookSnapshot, type OrderBookSnapshot } from '../orderbook/snapshot.js';
 import type { OnChainOrderReader } from '../settlement/SettlementClient.js';
+import { assetKey, type Asset } from '../types/Asset.js';
+import type { MarketStats } from '../types/MarketStats.js';
 import { isExpired, type Order } from '../types/Order.js';
 import type { CreateOrderInput } from '../utils/validation.js';
 import { verifyOrderSignature } from '../utils/orderDetailsCodec.js';
@@ -234,5 +237,42 @@ export class OrderService {
       .listOpen()
       .map((order) => this.materializeExpiry(order))
       .filter((order) => order.status === 'OPEN');
+  }
+
+  /** Live orderbook snapshot for one asset — the read path behind GET /orderbook. The frontend keeps this current afterward purely from the existing order.created/cancelled/expired/matched WS broadcasts, so no separate orderbook WS message type exists. */
+  getOrderBookSnapshot(asset: Asset): OrderBookSnapshot {
+    const openOrders = this.orderRepo
+      .listOpenByAssetKey(assetKey(asset))
+      .map((order) => this.materializeExpiry(order))
+      .filter((order) => order.status === 'OPEN');
+    return buildOrderBookSnapshot(asset, openOrders);
+  }
+
+  /** Most recent trades (fills) for one asset, newest first — the read path behind GET /trades. Each trade is a persisted Match; the frontend's live trade tape appends to this from the existing order.matched WS broadcast. */
+  listRecentTrades(asset: Asset, limit: number): Match[] {
+    return this.matchRepo.listRecentByAssetKey(assetKey(asset), limit, asset);
+  }
+
+  /** Rolling-window stats for one asset, computed on read from persisted matches — the read path behind GET /stats. See types/MarketStats.ts. */
+  getMarketStats(asset: Asset, windowMs: number): MarketStats {
+    const trades = this.matchRepo.listSinceByAssetKey(assetKey(asset), this.now() - windowMs, asset);
+    if (trades.length === 0) {
+      return { asset, lastPrice: null, openPrice: null, high: null, low: null, volumeBase: 0n, tradeCount: 0, changePct: null };
+    }
+
+    let high = trades[0]!.price;
+    let low = trades[0]!.price;
+    let volume = 0n;
+    for (const trade of trades) {
+      if (trade.price > high) high = trade.price;
+      if (trade.price < low) low = trade.price;
+      volume += trade.amount;
+    }
+
+    const openPrice = trades[0]!.price;
+    const lastPrice = trades[trades.length - 1]!.price;
+    const changePct = openPrice > 0n ? (Number(lastPrice - openPrice) / Number(openPrice)) * 100 : null;
+
+    return { asset, lastPrice, openPrice, high, low, volumeBase: volume, tradeCount: trades.length, changePct };
   }
 }

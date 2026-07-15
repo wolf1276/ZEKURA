@@ -385,3 +385,115 @@ describe('OrderService expiry materialization', () => {
     expect(service.listOpen()).toEqual([]);
   });
 });
+
+describe('OrderService market data reads', () => {
+  let harness: ReturnType<typeof makeHarness>;
+
+  beforeEach(() => {
+    harness = makeHarness();
+  });
+
+  it('getOrderBookSnapshot aggregates resting OPEN orders for the queried asset only', async () => {
+    const other = { isLeft: true, left: hexFill('ff'), right: hexFill('00') };
+    const buy1 = buildInput({ id: hexFill('01'), side: 'BUY', price: 900n, amount: 10n, ownerId: hexFill('aa'), signature: hexFill('11') });
+    const buy2 = buildInput({ id: hexFill('02'), side: 'BUY', price: 900n, amount: 5n, ownerId: hexFill('bb'), signature: hexFill('22') });
+    const sell = buildInput({ id: hexFill('03'), side: 'SELL', price: 1_200n, amount: 20n, ownerId: hexFill('cc'), signature: hexFill('33') });
+    const otherAsset = buildInput({ id: hexFill('04'), side: 'BUY', price: 500n, amount: 1n, ownerId: hexFill('dd'), signature: hexFill('44'), asset: other });
+    for (const input of [buy1, buy2, sell, otherAsset]) {
+      harness.onChainReader.register(input.id, { state: 'OPEN', commitment: input.commitment });
+      await harness.service.submitOrder(input);
+    }
+
+    const snapshot = harness.service.getOrderBookSnapshot(ASSET);
+    expect(snapshot.bids).toEqual([{ price: 900n, amount: 15n, orderCount: 2 }]);
+    expect(snapshot.asks).toEqual([{ price: 1_200n, amount: 20n, orderCount: 1 }]);
+  });
+
+  it('listRecentTrades returns matches for the queried asset, newest first', async () => {
+    const buy1 = buildInput({ id: hexFill('01'), side: 'BUY', price: 1_000n, amount: 10n, ownerId: hexFill('aa'), signature: hexFill('11') });
+    const sell1 = buildInput({ id: hexFill('02'), side: 'SELL', price: 900n, amount: 10n, ownerId: hexFill('bb'), signature: hexFill('22') });
+    for (const input of [buy1, sell1]) {
+      harness.onChainReader.register(input.id, { state: 'OPEN', commitment: input.commitment });
+    }
+    await harness.service.submitOrder(buy1);
+    const { match } = await harness.service.submitOrder(sell1) as { match: { id: string } | null };
+
+    const trades = harness.service.listRecentTrades(ASSET, 10);
+    expect(trades).toHaveLength(1);
+    expect(trades[0]?.id).toBe(match?.id);
+    expect(trades[0]?.price).toBe(900n); // resting (sell) order's price
+    expect(trades[0]?.amount).toBe(10n);
+  });
+
+  // Matches are inserted directly via matchRepo (rather than driven through
+  // the full submitOrder matching flow) so `matchedAt` can be pinned exactly
+  // — MatchingEngine.onOrderArrived stamps matches with the real wall-clock
+  // Date.now(), not OrderService's injectable `now`, so submitOrder can't
+  // produce a deterministic matchedAt under a mocked clock.
+  it('getMarketStats computes last/open/high/low/volume/changePct over the window from persisted matches', () => {
+    const now = 3_000;
+    const db = openDatabase(':memory:');
+    const orderRepo = new OrderRepository(db);
+    const matchRepo = new MatchRepository(db);
+    const orderBook = new OrderBook();
+    const matchingEngine = new MatchingEngine(orderBook, new PriceTimePriorityStrategy());
+    const onChainReader = new FakeOnChainReader();
+    const broadcaster: Broadcaster = { broadcast: () => {} };
+    const service = new OrderService({
+      db, orderRepo, matchRepo, orderBook, matchingEngine, onChainReader, broadcaster, logger,
+      onMatch: () => {},
+      now: () => now,
+    });
+
+    orderRepo.insert({
+      id: hexFill('01'), asset: ASSET, side: 'BUY', price: 1_000n, amount: 10n,
+      commitment: hexFill('c1'), ownerId: hexFill('aa'), signature: hexFill('11'),
+      status: 'FILLED', createdAt: 0, expiresAt: 9_999_999_999n,
+    });
+    orderRepo.insert({
+      id: hexFill('02'), asset: ASSET, side: 'SELL', price: 1_000n, amount: 10n,
+      commitment: hexFill('c2'), ownerId: hexFill('bb'), signature: hexFill('22'),
+      status: 'FILLED', createdAt: 0, expiresAt: 9_999_999_999n,
+    });
+    orderRepo.insert({
+      id: hexFill('03'), asset: ASSET, side: 'BUY', price: 1_100n, amount: 5n,
+      commitment: hexFill('c3'), ownerId: hexFill('cc'), signature: hexFill('33'),
+      status: 'FILLED', createdAt: 1_000, expiresAt: 9_999_999_999n,
+    });
+    orderRepo.insert({
+      id: hexFill('04'), asset: ASSET, side: 'SELL', price: 1_100n, amount: 5n,
+      commitment: hexFill('c4'), ownerId: hexFill('dd'), signature: hexFill('44'),
+      status: 'FILLED', createdAt: 1_000, expiresAt: 9_999_999_999n,
+    });
+    matchRepo.insert({ id: 'm1', buyOrderId: hexFill('01'), sellOrderId: hexFill('02'), asset: ASSET, price: 1_000n, amount: 10n, matchedAt: 1_000 });
+    matchRepo.insert({ id: 'm2', buyOrderId: hexFill('03'), sellOrderId: hexFill('04'), asset: ASSET, price: 1_100n, amount: 5n, matchedAt: 2_000 });
+
+    const stats = service.getMarketStats(ASSET, 10_000);
+    expect(stats.tradeCount).toBe(2);
+    expect(stats.openPrice).toBe(1_000n);
+    expect(stats.lastPrice).toBe(1_100n);
+    expect(stats.high).toBe(1_100n);
+    expect(stats.low).toBe(1_000n);
+    expect(stats.volumeBase).toBe(15n);
+    expect(stats.changePct).toBeCloseTo(10, 5);
+  });
+
+  it('getMarketStats excludes trades outside the window', () => {
+    harness.orderRepo.insert({
+      id: hexFill('01'), asset: ASSET, side: 'BUY', price: 1_000n, amount: 10n,
+      commitment: hexFill('c1'), ownerId: hexFill('aa'), signature: hexFill('11'),
+      status: 'FILLED', createdAt: 0, expiresAt: 9_999_999_999n,
+    });
+    harness.orderRepo.insert({
+      id: hexFill('02'), asset: ASSET, side: 'SELL', price: 1_000n, amount: 10n,
+      commitment: hexFill('c2'), ownerId: hexFill('bb'), signature: hexFill('22'),
+      status: 'FILLED', createdAt: 0, expiresAt: 9_999_999_999n,
+    });
+    harness.matchRepo.insert({ id: 'm1', buyOrderId: hexFill('01'), sellOrderId: hexFill('02'), asset: ASSET, price: 1_000n, amount: 10n, matchedAt: 0 });
+
+    // The service's `now` defaults to Date.now(), which is always far past a
+    // trade pinned at matchedAt=0 relative to a narrow 10s window.
+    const stats = harness.service.getMarketStats(ASSET, 10_000);
+    expect(stats).toEqual({ asset: ASSET, lastPrice: null, openPrice: null, high: null, low: null, volumeBase: 0n, tradeCount: 0, changePct: null });
+  });
+});

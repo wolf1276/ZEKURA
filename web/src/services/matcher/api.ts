@@ -8,8 +8,12 @@
 import type {
   CreateOrderRequest,
   CreateOrderResponse,
+  MatcherEitherAsset,
   MatcherErrorBody,
   MatcherOrder,
+  MatcherOrderBookSnapshot,
+  MatcherStats,
+  MatcherTrade,
 } from "@/types/matcher";
 
 export class MatcherApiError extends Error {
@@ -57,4 +61,27 @@ export async function getOrder(id: string): Promise<{ order: MatcherOrder }> {
 export async function listOpenOrders(): Promise<{ orders: MatcherOrder[] }> {
   const response = await fetch("/api/matcher/orders/open");
   return parseJsonOrThrow<{ orders: MatcherOrder[] }>(response);
+}
+
+function assetParams(asset: MatcherEitherAsset): URLSearchParams {
+  return new URLSearchParams({ isLeft: String(asset.isLeft), left: asset.left, right: asset.right });
+}
+
+export async function getOrderBook(asset: MatcherEitherAsset): Promise<MatcherOrderBookSnapshot> {
+  const response = await fetch(`/api/matcher/orderbook?${assetParams(asset)}`);
+  return parseJsonOrThrow<MatcherOrderBookSnapshot>(response);
+}
+
+export async function getTrades(asset: MatcherEitherAsset, limit = 50): Promise<{ trades: MatcherTrade[] }> {
+  const params = assetParams(asset);
+  params.set("limit", String(limit));
+  const response = await fetch(`/api/matcher/trades?${params}`);
+  return parseJsonOrThrow<{ trades: MatcherTrade[] }>(response);
+}
+
+export async function getStats(asset: MatcherEitherAsset, windowMs?: number): Promise<MatcherStats> {
+  const params = assetParams(asset);
+  if (windowMs !== undefined) params.set("windowMs", String(windowMs));
+  const response = await fetch(`/api/matcher/stats?${params}`);
+  return parseJsonOrThrow<MatcherStats>(response);
 }

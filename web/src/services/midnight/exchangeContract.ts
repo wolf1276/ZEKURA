@@ -45,9 +45,6 @@ import type {
   Witnesses as ExchangeWitnesses,
 } from "../../../../contracts/managed/exchange/contract/index.js";
 
-const PROOF_SERVER_URL =
-  process.env.NEXT_PUBLIC_PROOF_SERVER_URL?.trim() || "http://127.0.0.1:6300";
-
 // Never actually dereferenced by findDeployedContract/callTx (confirmed by
 // inspecting @midnight-ntwrk/midnight-js-contracts — it only reads
 // providers.zkConfigProvider by circuit id); kept only for structural parity
@@ -141,6 +138,7 @@ async function buildContractProviders(
   connectedApi: ConnectedAPI,
   configuration: Configuration,
   shielded: ConnectedWalletShieldedKeys,
+  proofServerUri: string,
 ): Promise<MidnightProviders<"createOrder", PrivateStateId, unknown>> {
   const zkConfigProvider = new FetchZkConfigProvider<"createOrder">(
     `${window.location.origin}/zk/exchange`,
@@ -149,13 +147,15 @@ async function buildContractProviders(
   // Lace does not implement getProvingProvider() (confirmed via the
   // Midnight docs MCP) — feature-detect and fall back to a local proof
   // server, per the documented "Where wallets diverge" guidance. Other
-  // connector-compatible wallets (e.g. 1AM) do implement it.
+  // connector-compatible wallets (e.g. 1AM) do implement it. `proofServerUri`
+  // comes from the active network's config (see network/networkConfig.ts) —
+  // never hardcoded here.
   const proofProvider =
     typeof connectedApi.getProvingProvider === "function"
       ? createProofProvider(
           await connectedApi.getProvingProvider(zkConfigProvider.asKeyMaterialProvider()),
         )
-      : httpClientProofProvider(PROOF_SERVER_URL, zkConfigProvider);
+      : httpClientProofProvider(proofServerUri, zkConfigProvider);
 
   return {
     privateStateProvider: createNoopPrivateStateProvider(),
@@ -199,6 +199,8 @@ export async function submitCreateOrder(params: {
   connectedApi: ConnectedAPI;
   configuration: Configuration;
   shielded: ConnectedWalletShieldedKeys;
+  /** Fallback local proof server, from the active network's config — see network/networkConfig.ts. */
+  proofServerUri: string;
   contractAddress: string;
   orderId: Uint8Array;
   commitment: Uint8Array;
@@ -207,6 +209,7 @@ export async function submitCreateOrder(params: {
     params.connectedApi,
     params.configuration,
     params.shielded,
+    params.proofServerUri,
   );
 
   const deployed = await findDeployedContract(providers, {

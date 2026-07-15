@@ -2,17 +2,17 @@
 
 import { useCallback, useState } from "react";
 import { fromHex, toHex } from "@midnight-ntwrk/midnight-js-utils";
-import { useWalletContext } from "@/providers/wallet-provider";
+import { useWalletContext } from "@/wallet/walletContext";
+import { useNetworkContext } from "@/network/networkContext";
 import { computeCommitment, type OrderDetailsValue } from "@/services/midnight/commitment";
 import { pureCircuits, submitCreateOrder } from "@/services/midnight/exchangeContract";
 import { getOrCreateOwnerSecret } from "@/services/midnight/ownerSecret";
-import { toWalletError } from "@/services/midnight/walletConnector";
+import { toWalletError } from "@/wallet/walletConnector";
 import { MatcherApiError, submitOrder } from "@/services/matcher/api";
 import { expiryToUnixSeconds } from "@/lib/order-status";
-import { WalletError } from "@/types/wallet";
+import { setTxPending } from "@/network/networkBridge";
+import { WalletError } from "@/wallet/walletTypes";
 import type { AssetPair, ExpiryOption, Order, OrderSide } from "@/lib/types";
-
-const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS?.trim() ?? "";
 
 const INTEGER_STRING = /^[0-9]+$/;
 
@@ -42,14 +42,19 @@ function hexToBytes32(hex: string): Uint8Array {
 
 export function useSubmitOrder() {
   const { status, wallet, getConnectedApi } = useWalletContext();
+  const { network, switching: networkSwitching } = useNetworkContext();
   const [state, setState] = useState<SubmitOrderPhase>({ phase: "idle" });
 
   const submit = useCallback(
     async (input: SubmitOrderInput): Promise<Order | null> => {
       try {
-        if (!CONTRACT_ADDRESS) {
+        if (networkSwitching) {
+          throw new Error("Network switch in progress — try again in a moment.");
+        }
+        const contractAddress = network.contractAddress;
+        if (!contractAddress) {
           throw new Error(
-            "NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS is not configured — see web/.env.example.",
+            `Zekura's exchange contract isn't deployed on ${network.label} yet. Switch networks or check back later.`,
           );
         }
         if (status === "unavailable") {
@@ -58,10 +63,10 @@ export function useSubmitOrder() {
             "No Midnight wallet detected. Install 1AM Wallet (or another Midnight-compatible wallet) and refresh.",
           );
         }
-        if (status === "wrong-network") {
+        if (status === "unsupported-network") {
           throw new WalletError(
-            "wrong-network",
-            `Your wallet is on the wrong network. Switch it to ${process.env.NEXT_PUBLIC_NETWORK_ID?.trim() || "preprod"} and reconnect.`,
+            "unsupported-network",
+            `Your wallet is on a network Zekura doesn't support. Switch it to ${network.label} and reconnect.`,
           );
         }
         if (status !== "connected" || !wallet) {
@@ -99,19 +104,30 @@ export function useSubmitOrder() {
 
         const commitment = computeCommitment(details, blinding);
 
-        // The wallet's approval pop-up happens inside this call
-        // (balanceUnsealedTransaction / submitTransaction).
-        await submitCreateOrder({
-          connectedApi,
-          configuration: wallet.configuration,
-          shielded: {
-            shieldedCoinPublicKey: wallet.shieldedCoinPublicKey,
-            shieldedEncryptionPublicKey: wallet.shieldedEncryptionPublicKey,
-          },
-          contractAddress: CONTRACT_ADDRESS,
-          orderId,
-          commitment,
-        });
+        // Blocks network switching (see networkBridge.ts) for the on-chain
+        // call below — it depends on the SDK's global network id and the
+        // `contractAddress` captured at the top of this function, so a
+        // switch mid-call would submit against a network that's no longer
+        // the SDK's active one.
+        setTxPending(true);
+        try {
+          // The wallet's approval pop-up happens inside this call
+          // (balanceUnsealedTransaction / submitTransaction).
+          await submitCreateOrder({
+            connectedApi,
+            configuration: wallet.configuration,
+            shielded: {
+              shieldedCoinPublicKey: wallet.shieldedCoinPublicKey,
+              shieldedEncryptionPublicKey: wallet.shieldedEncryptionPublicKey,
+            },
+            proofServerUri: network.proofServerUri,
+            contractAddress,
+            orderId,
+            commitment,
+          });
+        } finally {
+          setTxPending(false);
+        }
 
         setState({ phase: "disclosing" });
 
@@ -152,7 +168,7 @@ export function useSubmitOrder() {
         return null;
       }
     },
-    [status, wallet, getConnectedApi],
+    [status, wallet, getConnectedApi, network, networkSwitching],
   );
 
   const reset = useCallback(() => setState({ phase: "idle" }), []);

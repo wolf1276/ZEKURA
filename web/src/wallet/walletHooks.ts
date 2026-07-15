@@ -1,7 +1,7 @@
 "use client";
 
 import { unshieldedToken } from "@midnight-ntwrk/ledger-v8";
-import { useWalletContext } from "@/providers/wallet-provider";
+import { useWalletContext } from "./walletContext";
 
 /**
  * This demo exchange trades placeholder pairs (tDUST/tUSD/tNIGHT) that are

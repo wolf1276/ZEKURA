@@ -82,6 +82,39 @@ export interface MatcherErrorBody {
   issues?: unknown;
 }
 
+export interface MatcherOrderBookLevel {
+  price: string;
+  amount: string;
+  orderCount: number;
+}
+
+export interface MatcherOrderBookSnapshot {
+  asset: MatcherEitherAsset;
+  /** Highest price first. */
+  bids: MatcherOrderBookLevel[];
+  /** Lowest price first. */
+  asks: MatcherOrderBookLevel[];
+}
+
+export interface MatcherTrade {
+  id: string;
+  asset: MatcherEitherAsset;
+  price: string;
+  amount: string;
+  matchedAt: number;
+}
+
+export interface MatcherStats {
+  asset: MatcherEitherAsset;
+  lastPrice: string | null;
+  openPrice: string | null;
+  high: string | null;
+  low: string | null;
+  volumeBase: string;
+  tradeCount: number;
+  changePct: number | null;
+}
+
 export type MatcherWsMessage =
   | { type: "order.created"; payload: MatcherOrder; timestamp: number }
   | { type: "order.matched"; payload: MatcherMatch; timestamp: number }
