@@ -62,6 +62,9 @@ async function main() {
     orderBlinding: () => {
       throw new Error('orderBlinding witness not implemented in e2e-check.ts (read-only check does not execute circuits).');
     },
+    ownerSecretKey: () => {
+      throw new Error('ownerSecretKey witness not implemented in e2e-check.ts (read-only check does not execute circuits).');
+    },
   };
   // Dynamic import makes Exchange.Contract's inferred type `any`; supplying
   // the real generated Contract type as an explicit type argument keeps

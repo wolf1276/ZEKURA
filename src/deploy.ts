@@ -78,14 +78,18 @@ const Exchange = await import(pathToFileURL(contractPath).href);
 // circuit — so the witnesses are never actually invoked here. They still
 // have to be supplied to satisfy CompiledContract's type-level requirement
 // that every witness the contract declares has an implementation somewhere.
-// orderDetails/orderBlinding are the wallet/Matcher's private data; assembling
-// them is client tooling out of scope for Level 1 (see src/cli.ts).
+// orderDetails/orderBlinding/ownerSecretKey are the wallet/Matcher's private
+// data; assembling them is client tooling out of scope for Level 1 (see
+// src/cli.ts).
 const exchangeWitnesses = {
   orderDetails: () => {
     throw new Error('orderDetails witness not implemented in deploy.ts (deployment does not execute circuits).');
   },
   orderBlinding: () => {
     throw new Error('orderBlinding witness not implemented in deploy.ts (deployment does not execute circuits).');
+  },
+  ownerSecretKey: () => {
+    throw new Error('ownerSecretKey witness not implemented in deploy.ts (deployment does not execute circuits).');
   },
 };
 

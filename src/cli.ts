@@ -49,8 +49,9 @@ if (!fs.existsSync(contractPath)) {
 const Exchange = await import(pathToFileURL(contractPath).href);
 
 // This CLI only calls the read-only getOrder circuit, which never touches
-// the orderDetails/orderBlinding witnesses (those are only needed by
-// cancelOrder/expireOrder/settle to re-verify a commitment). Real
+// the orderDetails/orderBlinding/ownerSecretKey witnesses (those are only
+// needed by cancelOrder/expireOrder/settle to re-verify a commitment and,
+// for cancelOrder, to derive the caller's owner identity). Real
 // implementations would throw if actually invoked from here.
 const exchangeWitnesses: Witnesses<undefined> = {
   orderDetails: () => {
@@ -58,6 +59,9 @@ const exchangeWitnesses: Witnesses<undefined> = {
   },
   orderBlinding: () => {
     throw new Error('orderBlinding witness not implemented in cli.ts — this menu is read-only (see file header).');
+  },
+  ownerSecretKey: () => {
+    throw new Error('ownerSecretKey witness not implemented in cli.ts — this menu is read-only (see file header).');
   },
 };
 
