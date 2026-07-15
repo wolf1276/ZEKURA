@@ -8,9 +8,16 @@ This is **Level 1** of the Midnight Builder Challenge: the on-chain order regist
 
 | Network     | Contract Address | Deployed |
 |-------------|-------------------|----------|
-| Preview     | `c0acbedfff231c7d9ed8d8015f41881f42c5e113cbf7c9c5bc8efdcb817d8003` | 2026-07-15 |
+| Preview     | `c0acbedfff231c7d9ed8d8015f41881f42c5e113cbf7c9c5bc8efdcb817d8003` (stale — pre-audit build, see [AUDIT.md](./AUDIT.md)) | 2026-07-15 |
 | Preprod     | not deployed | — |
 | Undeployed (local devnet) | redeploy locally via `npm run setup` | — |
+
+> The Preview address above was deployed before the security audit in
+> [AUDIT.md](./AUDIT.md) fixed a critical `cancelOrder` authorization bypass.
+> That fix changes `cancelOrder`'s circuit logic (and therefore its verifier
+> key), so the deployed instance no longer matches `contracts/exchange.compact`.
+> Redeploy with `npm run setup -- --network preview` before using this
+> contract for anything beyond re-reading old state.
 
 ## Architecture
 
@@ -31,13 +38,15 @@ an order book — it never sees, stores, or matches order contents. It is a
 public commitment registry: it records that an order with a given ID exists,
 what its commitment is, and what lifecycle state it's in, and nothing else.
 
-> **Note on scope:** the deployed contract's source (`contracts/exchange.compact`)
-> already contains `settle()` and `expireOrder()` circuits plus replay
-> protection (`settledPairs`) and an event log — these were built ahead of
-> Level 1 and are kept because they already work, but they are **not**
-> Level 1 deliverables and are not exercised by the Level 1 test suite. The
-> circuits this level is scoped to are `createOrder`, `cancelOrder`, and
-> `getOrder`.
+> **Note on scope:** the contract source (`contracts/exchange.compact`) already
+> contains `settle()` and `expireOrder()` circuits plus replay protection
+> (`settledPairs`) and an event log — these were built ahead of Level 1 and
+> are kept because they already work. They are **not** Level 1 deliverables
+> (the circuits this level is formally scoped to are `createOrder`,
+> `cancelOrder`, and `getOrder`), but a full pre-mainnet security audit
+> (see [AUDIT.md](./AUDIT.md)) has since reviewed and hardened the entire
+> contract, `settle()`/`expireOrder()` included, and the test suite in
+> `tests/exchange.test.ts` now exercises all five circuits.
 
 ## Privacy Model
 
@@ -65,10 +74,19 @@ the order's contents is ever revealed at creation time.
 To cancel an order, the owner's wallet supplies the *same* private details
 and blinding factor back to the `cancelOrder` circuit as witnesses. The
 circuit recomputes the commitment from those witnesses and checks it against
-the one on record — proving the caller actually knows the order's true
-contents (and is therefore entitled to act on it) without ever writing those
-contents to the chain. It further checks that the disclosed `owner` matches
-the caller's own public key before allowing the cancellation to proceed.
+the one on record — proving the caller knows the order's true contents,
+without ever writing those contents to the chain.
+
+Knowing an order's contents is necessary but not sufficient to cancel it —
+the Matcher also legitimately knows them (a wallet discloses full order
+details off-chain for settlement), so `cancelOrder` needs a second,
+independent check that only the actual owner can pass. The owner field is a
+DApp-specific identity, `deriveOwnerId(secret)` (a domain-separated hash of a
+secret only the owner's wallet holds), computed and embedded in `owner` when
+the order is created; `cancelOrder` re-derives it from whatever secret the
+caller supplies via the `ownerSecretKey` witness and requires the two to
+match. This intentionally does **not** use `ownPublicKey()` — see
+[AUDIT.md](./AUDIT.md) for why that would be an authorization bypass.
 
 ## Tech Stack
 
@@ -114,7 +132,14 @@ circuits directly through `@midnight-ntwrk/compact-runtime`'s in-memory
 - `cancelOrder` — a full real commitment-verification round trip (computes
   `persistentCommit<OrderDetails>` off-chain exactly as the circuit does
   on-chain, and confirms the circuit accepts it), plus rejections for a
-  mismatched commitment, a non-owner caller, a double cancel, and an unknown ID
+  mismatched commitment, a wrong `ownerSecretKey`, a double cancel, and an
+  unknown ID — including the regression test proving that knowing an order's
+  committed details/blinding (as the Matcher legitimately does) is *not*
+  enough to cancel it (see [AUDIT.md](./AUDIT.md), finding P0-1)
+- `settle` / `expireOrder` — matching-pair fills, asset/amount/price/side/
+  expiry/self-trade rejections, replay-attack and atomicity checks, and
+  boundary values (`Uint<128>`/`Uint<64>` max, equal-price crossing,
+  all-zero IDs)
 - **Privacy invariant** — after a create + cancel cycle with a live order
   payload in the witness store, asserts the `orders` and `eventLog` ledger
   entries expose *only* their declared public fields (`commitment`/`state`
