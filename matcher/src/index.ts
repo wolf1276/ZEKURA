@@ -51,19 +51,45 @@ import { SocketServer } from './websocket/SocketServer.js';
 // @ts-expect-error Required for wallet sync
 globalThis.WebSocket = WebSocket;
 
+/**
+ * Locates the zekura repo root by walking up from this file's own directory
+ * until `contracts/exchange.compact` is found. Deliberately NOT a fixed
+ * `path.resolve(__dirname, '..', '..')` hop count: this file's on-disk
+ * depth relative to the repo root differs between `tsx` (runs directly from
+ * matcher/src/, 2 levels down) and the compiled build (lands at
+ * matcher/dist/matcher/src/, 4 levels down — see README.md's build-output
+ * note, a consequence of index.ts importing ../../src/wallet.ts across the
+ * package boundary). A fixed hop count is only ever correct for one of the
+ * two, so the search below is used instead of __dirname arithmetic for
+ * every filesystem path derived from the repo root (zkConfigPath, and the
+ * cwd passed to resolveNetwork/getDeployment/getOrCreateSeed/createWallet).
+ */
+function findRepoRoot(startDir: string): string {
+  let dir = startDir;
+  for (;;) {
+    if (fs.existsSync(path.join(dir, 'contracts', 'exchange.compact'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      throw new Error(`Could not locate the zekura repo root (contracts/exchange.compact) above ${startDir}`);
+    }
+    dir = parent;
+  }
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger('matcher', { level: config.logLevel, pretty: config.prettyLogs });
 
-  const { network, config: networkConfig } = resolveNetwork();
-  const deployment = getDeployment(network);
+  const repoRoot = findRepoRoot(path.dirname(fileURLToPath(import.meta.url)));
+
+  const { network, config: networkConfig } = resolveNetwork({ cwd: repoRoot });
+  const deployment = getDeployment(network, { cwd: repoRoot });
   if (!deployment) {
     logger.error({ network }, 'No contract deployment recorded for this network — run `npm run setup` in the repo root first');
     process.exit(1);
   }
 
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const zkConfigPath = path.resolve(__dirname, '..', '..', 'contracts', 'managed', 'exchange');
+  const zkConfigPath = path.join(repoRoot, 'contracts', 'managed', 'exchange');
   const contractPath = path.join(zkConfigPath, 'contract', 'index.js');
   if (!fs.existsSync(contractPath)) {
     logger.error('Contract not compiled — run `npm run compile` in the repo root first');
@@ -75,11 +101,11 @@ async function main(): Promise<void> {
   const orderRepo = new OrderRepository(db);
   const matchRepo = new MatchRepository(db);
 
-  const seed = process.env[config.matcherSeedEnvVar]?.trim() || getOrCreateSeed(network);
+  const seed = process.env[config.matcherSeedEnvVar]?.trim() || getOrCreateSeed(network, { cwd: repoRoot });
   logger.info({ network }, 'syncing matcher operator wallet');
-  const walletCtx = await createWallet({ network, networkConfig, seed });
+  const walletCtx = await createWallet({ network, networkConfig, seed, cwd: repoRoot });
   const walletState = await walletCtx.wallet.waitForSyncedState();
-  await persistWalletState(network, walletCtx);
+  await persistWalletState(network, walletCtx, repoRoot);
   logger.info(
     { balance: (walletState.unshielded.balances[unshieldedToken().raw] ?? 0n).toString() },
     'matcher operator wallet synced',
@@ -131,8 +157,10 @@ async function main(): Promise<void> {
   const compiledContract = CompiledContract.withCompiledFileAssets(compiledContractWithWitnesses, zkConfigPath);
 
   logger.info({ contractAddress: deployment.address }, 'connecting to deployed exchange contract');
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // The dynamically-imported contract module is typed `any`; the `as any` here mirrors the
+  // exact same cast already used in ../../src/cli.ts and ../../src/deploy.ts for this reason.
   const foundContract = await findDeployedContract(providers, {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     compiledContract: compiledContract as any,
     contractAddress: deployment.address,
   });
@@ -169,10 +197,12 @@ async function main(): Promise<void> {
   // object below has finished being constructed, so a closure over a
   // not-yet-assigned `let` is sufficient — no event emitter or DI
   // container needed for two call sites.
+  // eslint-disable-next-line prefer-const -- assigned once, later (line ~201); must stay `let` for the closure above to observe it
   let socketServer: SocketServer | undefined;
   const broadcaster: Broadcaster = {
     broadcast: <T>(type: MatcherEventType, payload: T) => socketServer?.broadcast(type, payload),
   };
+  // eslint-disable-next-line prefer-const -- assigned once, later (line ~190); must stay `let` for the closure above to observe it
   let settlementService: SettlementService | undefined;
 
   const orderService = new OrderService({

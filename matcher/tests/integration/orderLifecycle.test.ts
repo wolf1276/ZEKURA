@@ -65,6 +65,7 @@ function buildSystem(settleCaller: SettleCircuitCaller) {
   const settlementClient = new SettlementClient(settleCaller, onChainReader, logger);
   const queue = new SettlementQueue({ maxRetries: 2, retryDelayMs: 5 }, logger);
 
+  // eslint-disable-next-line prefer-const -- assigned once, below; must stay `let` for the onMatch closure above to observe it
   let settlementService: SettlementService | undefined;
   const orderService = new OrderService({
     db, orderRepo, matchRepo, orderBook, matchingEngine, onChainReader, broadcaster, logger,
