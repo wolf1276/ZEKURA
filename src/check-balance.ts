@@ -6,7 +6,7 @@ import { WebSocket } from 'ws';
 // Midnight SDK imports
 import { unshieldedToken } from '@midnight-ntwrk/ledger-v8';
 import { resolveNetwork, getOrCreateSeed } from './network';
-import { createWallet, persistWalletState } from './wallet';
+import { createWallet, persistWalletState, startCheckpointing } from './wallet';
 
 // Enable WebSocket for GraphQL subscriptions
 // @ts-expect-error Required for wallet sync
@@ -40,7 +40,12 @@ async function main() {
       const elapsed = Math.round((Date.now() - syncStart) / 1000);
       process.stdout.write(`\r  ⏳ Still syncing... (${elapsed}s elapsed)   `);
     }, 5000);
+    // Checkpoint progress every 30s so a long remote sync that gets killed
+    // (e.g. OOM on a memory-constrained host) resumes from where it left off
+    // instead of re-syncing from genesis on the next run.
+    const checkpoint = startCheckpointing(network, walletCtx);
     const state = await walletCtx.wallet.waitForSyncedState();
+    checkpoint.stop();
     clearInterval(syncInterval);
     process.stdout.write('\r  ✓ Synced with network.                                      \n');
 

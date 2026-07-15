@@ -6,6 +6,7 @@
 
 import { Buffer } from 'buffer';
 
+import * as Rx from 'rxjs';
 import * as ledger from '@midnight-ntwrk/ledger-v8';
 import { unshieldedToken } from '@midnight-ntwrk/ledger-v8';
 import { setNetworkId, getNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
@@ -186,4 +187,35 @@ export async function persistWalletState(
   }
 
   saveWalletState(network, next, { cwd });
+}
+
+/**
+ * Periodically persist wallet state while a long sync is in flight.
+ *
+ * A from-genesis sync against a long-lived remote chain (e.g. a first-ever
+ * Preprod sync) can run for many minutes and, on memory-constrained hosts,
+ * can be killed (OOM) before it ever reaches `waitForSyncedState()` — the
+ * only point at which the normal call flow persists state. Without an
+ * in-flight checkpoint, every retry re-syncs from block zero. Subscribing to
+ * `wallet.state()` and saving on a throttle turns that into incremental
+ * progress: each run resumes from the last checkpoint instead of genesis.
+ */
+export function startCheckpointing(
+  network: NetworkId,
+  ctx: WalletContext,
+  opts: { intervalMs?: number; cwd?: string } = {},
+): { stop: () => void } {
+  const intervalMs = opts.intervalMs ?? 30_000;
+  const subscription = ctx.wallet
+    .state()
+    .pipe(Rx.throttleTime(intervalMs))
+    .subscribe({
+      next: () => {
+        persistWalletState(network, ctx, opts.cwd).catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`  ⚠ Periodic checkpoint failed (${msg}); continuing.\n`);
+        });
+      },
+    });
+  return { stop: () => subscription.unsubscribe() };
 }
