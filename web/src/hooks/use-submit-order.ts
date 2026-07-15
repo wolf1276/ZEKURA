@@ -53,12 +53,15 @@ export function useSubmitOrder() {
           );
         }
         if (status === "unavailable") {
-          throw new WalletError("wallet-missing", "Lace wallet not detected. Install it and refresh.");
+          throw new WalletError(
+            "wallet-missing",
+            "No Midnight wallet detected. Install 1AM Wallet (or another Midnight-compatible wallet) and refresh.",
+          );
         }
         if (status === "wrong-network") {
           throw new WalletError(
             "wrong-network",
-            `Your wallet is on the wrong network. Switch it to ${process.env.NEXT_PUBLIC_NETWORK_ID?.trim() || "preview"} and reconnect.`,
+            `Your wallet is on the wrong network. Switch it to ${process.env.NEXT_PUBLIC_NETWORK_ID?.trim() || "preprod"} and reconnect.`,
           );
         }
         if (status !== "connected" || !wallet) {
@@ -96,7 +99,7 @@ export function useSubmitOrder() {
 
         const commitment = computeCommitment(details, blinding);
 
-        // The Lace approval pop-up happens inside this call
+        // The wallet's approval pop-up happens inside this call
         // (balanceUnsealedTransaction / submitTransaction).
         await submitCreateOrder({
           connectedApi,

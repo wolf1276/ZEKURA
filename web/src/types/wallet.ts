@@ -1,8 +1,9 @@
 /**
- * Types for the Lace/Midnight DApp Connector integration
- * (@midnight-ntwrk/dapp-connector-api v4.0.1). Kept separate from the
- * connector's own types so the rest of the app depends on a small,
- * UI-shaped surface instead of the full connector API.
+ * Types for the Midnight DApp Connector integration
+ * (@midnight-ntwrk/dapp-connector-api v4.0.1) — used by 1AM Wallet, Lace, and
+ * any other compatible wallet. Kept separate from the connector's own types
+ * so the rest of the app depends on a small, UI-shaped surface instead of the
+ * full connector API.
  */
 
 export type WalletStatus =

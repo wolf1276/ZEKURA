@@ -8,16 +8,15 @@ This is **Level 1** of the Midnight Builder Challenge: the on-chain order regist
 
 | Network     | Contract Address | Deployed |
 |-------------|-------------------|----------|
-| Preview     | `c0acbedfff231c7d9ed8d8015f41881f42c5e113cbf7c9c5bc8efdcb817d8003` (stale — pre-audit build, see [AUDIT.md](./AUDIT.md)) | 2026-07-15 |
+| Preview     | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` (post-audit build, see [AUDIT.md](./AUDIT.md)) | 2026-07-15 |
 | Preprod     | not deployed | — |
 | Undeployed (local devnet) | redeploy locally via `npm run setup` | — |
 
-> The Preview address above was deployed before the security audit in
-> [AUDIT.md](./AUDIT.md) fixed a critical `cancelOrder` authorization bypass.
-> That fix changes `cancelOrder`'s circuit logic (and therefore its verifier
-> key), so the deployed instance no longer matches `contracts/exchange.compact`.
-> Redeploy with `npm run setup -- --network preview` before using this
-> contract for anything beyond re-reading old state.
+> The address above reflects the `cancelOrder` authorization-bypass fix in
+> [AUDIT.md](./AUDIT.md) (the fix changed `cancelOrder`'s circuit logic and
+> therefore its verifier key). The previous Preview address
+> (`c0acbedfff231c7d9ed8d8015f41881f42c5e113cbf7c9c5bc8efdcb817d8003`) is stale
+> and no longer matches `contracts/exchange.compact`.
 
 ## Architecture
 

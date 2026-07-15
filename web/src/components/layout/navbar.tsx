@@ -103,7 +103,7 @@ function WalletPill() {
     }
 
     const wrongNetwork = status === "wrong-network";
-    const explorerUrl = EXPLORER_URL[wallet.networkId] ?? EXPLORER_URL.preview;
+    const explorerUrl = EXPLORER_URL[wallet.networkId] ?? EXPLORER_URL.preprod;
 
     return (
       <DropdownMenu>

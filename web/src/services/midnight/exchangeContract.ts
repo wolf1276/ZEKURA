@@ -1,14 +1,16 @@
 /**
  * Browser-side wiring for calling the already-compiled exchange.compact
- * contract (contracts/managed/exchange/) with a Lace-connected wallet.
+ * contract (contracts/managed/exchange/) with a connected Midnight DApp
+ * Connector wallet (1AM, Lace, or any other
+ * `@midnight-ntwrk/dapp-connector-api` implementation).
  *
  * Follows the exact conventions already established and working in this
  * repo (src/cli.ts, src/deploy.ts, matcher/src/index.ts):
  * `CompiledContract.make/.withWitnesses/.withCompiledFileAssets` +
  * `findDeployedContract(providers, {...}).callTx.<circuit>(...)`. Only the
  * providers differ: instead of a headless seed-based wallet, `walletProvider`
- * / `midnightProvider` are backed by the connected Lace `ConnectedAPI`
- * (`balanceUnsealedTransaction` / `submitTransaction` — this is the Lace
+ * / `midnightProvider` are backed by the connected `ConnectedAPI`
+ * (`balanceUnsealedTransaction` / `submitTransaction` — this is the wallet's
  * approval pop-up), and `zkConfigProvider` fetches the compiled ZK artifacts
  * over HTTP instead of from the local filesystem.
  *
@@ -130,10 +132,10 @@ export interface ConnectedWalletShieldedKeys {
 }
 
 /**
- * Builds the MidnightProviders backed by a live Lace connection.
+ * Builds the MidnightProviders backed by a live connected-wallet session.
  * `walletProvider.balanceTx` / `midnightProvider.submitTx` route through
  * `connectedApi.balanceUnsealedTransaction` / `connectedApi.submitTransaction`
- * — this is the Lace approval pop-up ("request wallet signature").
+ * — this is the wallet's approval pop-up ("request wallet signature").
  */
 async function buildContractProviders(
   connectedApi: ConnectedAPI,
@@ -189,7 +191,7 @@ async function buildContractProviders(
 
 /**
  * Submits `createOrder(orderId, commitment)` on-chain through the connected
- * Lace wallet: builds the call, proves it, has the wallet balance + sign it
+ * wallet: builds the call, proves it, has the wallet balance + sign it
  * (the approval pop-up), and submits it — returning once the wallet has
  * relayed it to the network.
  */
