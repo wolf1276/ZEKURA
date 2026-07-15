@@ -39,6 +39,10 @@ struct OrderDetails {
   isBuy: Boolean,
   price: Uint<128>,
   amount: Uint<128>,
+  // NOT a real Zswap wallet key. The `ZswapCoinPublicKey` type is reused
+  // purely for its Bytes<32> shape; the value a wallet actually puts here
+  // is deriveOwnerId(its own ownerSecretKey witness) — see the note on
+  // ownerSecretKey below for why.
   owner: ZswapCoinPublicKey,
   expiresAt: Uint<64>
 }
@@ -71,9 +75,31 @@ witness orderDetails(orderId: Bytes<32>): OrderDetails;
 // Reveals the blinding factor used when the order's commitment was created.
 witness orderBlinding(orderId: Bytes<32>): Bytes<32>;
 
+// Reveals the owner's own DApp-specific secret. Used only to *derive*
+// (never disclose) the identity compared against OrderDetails.owner in
+// cancelOrder. This — not ownPublicKey() — is the only sound way to verify
+// a caller in Compact: ownPublicKey() is itself a witness function with no
+// cryptographic binding to whoever actually signed the transaction, so a
+// malicious frontend can make it return any value it likes. A contract
+// that trusted `ownPublicKey() == details.owner` would let anyone who
+// merely *knows* an order's committed details (e.g. the Matcher, who is
+// disclosed those details for settlement) cancel it, without being the
+// owner.
+witness ownerSecretKey(): Bytes<32>;
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+// Derives a wallet's DApp-specific pseudonymous identity from its own
+// secret. A wallet sets OrderDetails.owner to deriveOwnerId(its secret)
+// when it creates an order; cancelOrder later re-derives the same value
+// from whatever secret the caller supplies via the ownerSecretKey witness
+// and requires it to match. Exported (and pure) so off-chain wallet code
+// can compute the identical value without duplicating the hash logic.
+export pure circuit deriveOwnerId(secretKey: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32> > >([pad(32, "zekura:owner:id"), secretKey]);
+}
 
 circuit recordEvent(kind: EventKind, orderId: Bytes<32>): [] {
   const key = persistentHash<OrderEvent>(OrderEvent { kind: kind, orderId: orderId });
@@ -127,7 +153,7 @@ export circuit cancelOrder(orderId: Bytes<32>): [] {
 
   const details = verifyOrderCommitment(id, record.commitment);
   assert(
-    disclose(details.owner.bytes) == ownPublicKey().bytes,
+    details.owner.bytes == deriveOwnerId(ownerSecretKey()),
     "Caller is not the order owner"
   );
 
@@ -158,6 +184,13 @@ export circuit settle(buyOrderId: Bytes<32>, sellOrderId: Bytes<32>): [] {
   const buyId = disclose(buyOrderId);
   const sellId = disclose(sellOrderId);
 
+  // Defense-in-depth: a single order can never be both the buy and sell
+  // side of its own fill (the isBuy checks below already make this
+  // unreachable, since one order can't disclose isBuy as both true and
+  // false), but rejecting it explicitly up front keeps that invariant
+  // obvious without relying on a reader tracing through later asserts.
+  assert(buyId != sellId, "Buy and sell order ids must differ");
+
   assert(orders.member(buyId), "Buy order does not exist");
   assert(orders.member(sellId), "Sell order does not exist");
 
@@ -186,6 +219,10 @@ export circuit settle(buyOrderId: Bytes<32>, sellOrderId: Bytes<32>): [] {
   assert(buyDetails.asset == sellDetails.asset, "Asset mismatch between orders");
   assert(buyDetails.amount == sellDetails.amount, "Amount mismatch between orders");
   assert(buyDetails.price >= sellDetails.price, "Buy price does not cross sell price");
+  assert(
+    !(buyDetails.owner.bytes == sellDetails.owner.bytes),
+    "Buy and sell orders must have different owners"
+  );
 
   orders.insert(buyId, OrderRecord { commitment: buyRecord.commitment, state: OrderState.FILLED });
   orders.insert(sellId, OrderRecord { commitment: sellRecord.commitment, state: OrderState.FILLED });
