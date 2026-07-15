@@ -154,15 +154,24 @@ function bytes32(fill: number): Uint8Array {
 const OWNER_PK_HEX = '00'.repeat(32);
 const OTHER_PK_HEX = '11'.repeat(32);
 
+// Distinct from the PK constants above: these back the ownerSecretKey
+// witness, which is what cancelOrder actually authorizes against (see
+// deriveOwnerId in the contract). The *_PK_HEX constants above remain only
+// as realistic-looking transaction-context caller keys — cancelOrder no
+// longer reads them for authorization at all.
+const OWNER_SECRET_HEX = 'aa'.repeat(32);
+const OTHER_SECRET_HEX = 'bb'.repeat(32);
+
 async function main() {
   const mod: any = await import(pathToFileURL(contractPath).href);
-  const { Contract, ledger, OrderState } = mod;
+  const { Contract, ledger, OrderState, EventKind, pureCircuits } = mod;
+  const { deriveOwnerId } = pureCircuits;
 
   // Fresh contract instance whose orderDetails/orderBlinding witnesses read
   // from a local, in-memory order store — standing in for the wallet's own
   // private storage. Nothing here is ever written to the ledger; it's only
   // ever read back by the circuits that need to re-verify a commitment.
-  function makeContract(callerPkHex: string = OWNER_PK_HEX) {
+  function makeContract(callerPkHex: string = OWNER_PK_HEX, ownerSecretHex: string = OWNER_SECRET_HEX) {
     const orderStore = new Map<string, { details: OrderDetailsValue; blinding: Uint8Array }>();
     const witnesses = {
       orderDetails: (context: any, orderId: Uint8Array) => {
@@ -176,6 +185,12 @@ async function main() {
         const entry = orderStore.get(key);
         if (!entry) throw new Error(`no witness data registered for order ${key}`);
         return [context.privateState, entry.blinding];
+      },
+      // Stands in for the wallet's own DApp-specific secret (never the
+      // Zswap wallet key). cancelOrder derives deriveOwnerId(this) and
+      // requires it to match the order's committed owner field.
+      ownerSecretKey: (context: any) => {
+        return [context.privateState, Buffer.from(ownerSecretHex, 'hex')];
       },
     };
     const contract = new Contract(witnesses);
@@ -202,6 +217,43 @@ async function main() {
         ctx = r.context;
         return r.result;
       },
+      // expireOrder/settle both read the current block time (via
+      // blockTimeGte, backed by QueryContext.block.secondsSinceEpoch) to
+      // decide expiry. atTimeSeconds, when given, rebuilds the circuit
+      // context at that simulated time before calling, exactly as
+      // cancelOrderAsOtherCaller rebuilds one for a different caller.
+      expireOrder(orderId: Uint8Array, atTimeSeconds?: number) {
+        const useCtx =
+          atTimeSeconds === undefined
+            ? ctx
+            : rt.createCircuitContext(
+                rt.dummyContractAddress(),
+                callerPkHex,
+                ctx.currentQueryContext.state,
+                ctx.currentPrivateState,
+                undefined,
+                undefined,
+                atTimeSeconds,
+              );
+        const r = contract.circuits.expireOrder(useCtx, orderId);
+        ctx = r.context;
+      },
+      settle(buyOrderId: Uint8Array, sellOrderId: Uint8Array, atTimeSeconds?: number) {
+        const useCtx =
+          atTimeSeconds === undefined
+            ? ctx
+            : rt.createCircuitContext(
+                rt.dummyContractAddress(),
+                callerPkHex,
+                ctx.currentQueryContext.state,
+                ctx.currentPrivateState,
+                undefined,
+                undefined,
+                atTimeSeconds,
+              );
+        const r = contract.circuits.settle(useCtx, buyOrderId, sellOrderId);
+        ctx = r.context;
+      },
       // Registers the private order payload a wallet would hold for
       // orderId, so the orderDetails/orderBlinding witnesses can serve it
       // back when a later circuit (cancelOrder) needs to reveal it.
@@ -211,19 +263,47 @@ async function main() {
       ledger() {
         return ledger(ctx.currentQueryContext.state);
       },
-      // Calls cancelOrder as a different caller (different ownPublicKey()),
-      // against the same ledger snapshot, without merging the result back —
-      // used only for the unauthorized-cancel negative test.
-      cancelOrderAsOtherCaller(otherPkHex: string, orderId: Uint8Array) {
-        const otherCtx = rt.createCircuitContext(
-          rt.dummyContractAddress(),
-          otherPkHex,
-          ctx.currentQueryContext.state,
-          ctx.currentPrivateState,
-        );
-        contract.circuits.cancelOrder(otherCtx, orderId);
+      // Raw ledger StateValue snapshot, for building an independent
+      // "attacker" contract instance against the same on-chain state (see
+      // attemptCancelWithForgedOwner below).
+      ledgerState() {
+        return ctx.currentQueryContext.state;
       },
     };
+  }
+
+  // Attempts cancelOrder from a *separate* contract/witness instance that
+  // legitimately knows an order's committed (details, blinding) — exactly
+  // as the Matcher would, since wallets disclose full order details to it
+  // for settlement — but is wired with a different ownerSecretKey. This is
+  // the regression test for the ownPublicKey()-spoofing authorization
+  // bypass: before the fix, cancelOrder trusted `ownPublicKey() ==
+  // details.owner`, and ownPublicKey() is a witness function any caller's
+  // own frontend can report arbitrarily, so simply knowing an order's
+  // details was already enough to forge ownership. Now that cancelOrder
+  // instead requires deriveOwnerId(ownerSecretKey()) to match, knowing the
+  // details/blinding alone must no longer be sufficient.
+  function attemptCancelWithForgedOwner(opts: {
+    forgedSecretHex: string;
+    orderId: Uint8Array;
+    details: OrderDetailsValue;
+    blinding: Uint8Array;
+    ledgerState: unknown;
+  }) {
+    const witnesses = {
+      orderDetails: (context: any) => [context.privateState, opts.details],
+      orderBlinding: (context: any) => [context.privateState, opts.blinding],
+      ownerSecretKey: (context: any) => [context.privateState, Buffer.from(opts.forgedSecretHex, 'hex')],
+    };
+    const attacker = new Contract(witnesses);
+    const init = attacker.initialState(rt.createConstructorContext(undefined, OTHER_PK_HEX));
+    const attackerCtx = rt.createCircuitContext(
+      rt.dummyContractAddress(),
+      OTHER_PK_HEX,
+      opts.ledgerState,
+      init.currentPrivateState,
+    );
+    attacker.circuits.cancelOrder(attackerCtx, opts.orderId);
   }
 
   function sampleOrder(overrides: Partial<OrderDetailsValue> = {}): OrderDetailsValue {
@@ -232,7 +312,7 @@ async function main() {
       isBuy: true,
       price: 1_000n,
       amount: 123_456_789n,
-      owner: { bytes: Buffer.from(OWNER_PK_HEX, 'hex') },
+      owner: { bytes: deriveOwnerId(Buffer.from(OWNER_SECRET_HEX, 'hex')) },
       expiresAt: 9_999_999_999n,
       ...overrides,
     };
@@ -323,23 +403,71 @@ async function main() {
     assertThrows(() => c.cancelOrder(orderId), 'Order commitment mismatch', 'mismatched witness data');
   });
 
-  test('cancelOrder: rejects a caller who is not the order owner', () => {
-    const c = makeContract(OWNER_PK_HEX);
+  test('cancelOrder: rejects a caller with the wrong ownerSecretKey', () => {
+    const c = makeContract(OWNER_PK_HEX, OWNER_SECRET_HEX);
     const orderId = bytes32(0x13);
     const blinding = bytes32(0x14);
-    const details = sampleOrder(); // owner.bytes == OWNER_PK_HEX
+    const details = sampleOrder(); // owner == deriveOwnerId(OWNER_SECRET_HEX)
     const commitment = computeCommitment(details, blinding);
 
     c.createOrder(orderId, commitment);
-    c.registerWitness(orderId, details, blinding);
+    // Registers the correct witness data under a contract instance whose
+    // ownerSecretKey is a *different* secret than the one the order's
+    // owner field was derived from.
+    const wrongOwnerC = makeContract(OTHER_PK_HEX, OTHER_SECRET_HEX);
+    wrongOwnerC.registerWitness(orderId, details, blinding);
 
+    assertThrows(() => wrongOwnerC.cancelOrder(orderId), 'Order does not exist', 'wrong-owner instance has no local order record');
+    // The meaningful check is on the *shared* ledger: attempting the same
+    // cancellation against the real ledger state, using the wrong secret,
+    // must fail on ownership, not on commitment/state checks.
     assertThrows(
-      () => c.cancelOrderAsOtherCaller(OTHER_PK_HEX, orderId),
+      () =>
+        attemptCancelWithForgedOwner({
+          forgedSecretHex: OTHER_SECRET_HEX,
+          orderId,
+          details,
+          blinding,
+          ledgerState: c.ledgerState(),
+        }),
       'Caller is not the order owner',
-      'non-owner cancel',
+      'non-owner cancel with correct commitment but wrong ownerSecretKey',
     );
     // Rejected call must not have mutated the primary ledger.
     assertEq(c.getOrder(orderId).state, OrderState.OPEN, 'status unchanged after rejected cancel');
+  });
+
+  test('cancelOrder: knowing an order\'s committed details/blinding is not sufficient to cancel it — closes the ownPublicKey() spoofing bypass', () => {
+    // Simulates the Matcher: it legitimately receives full order details
+    // (including the blinding factor) off-chain for settlement purposes,
+    // so it can always pass verifyOrderCommitment. Before this fix,
+    // cancelOrder authorized solely via `ownPublicKey() == details.owner`,
+    // and ownPublicKey() is a witness function any caller's own frontend
+    // can report arbitrarily — so anyone who merely knew an order's
+    // details (e.g. this Matcher) could forge cancellation of orders they
+    // do not own. deriveOwnerId(ownerSecretKey()) closes that hole because
+    // the Matcher never learns the owner's ownerSecretKey, only the
+    // order's disclosed details.
+    const c = makeContract(OWNER_PK_HEX, OWNER_SECRET_HEX);
+    const orderId = bytes32(0x1a);
+    const blinding = bytes32(0x1b);
+    const details = sampleOrder();
+    const commitment = computeCommitment(details, blinding);
+    c.createOrder(orderId, commitment);
+
+    assertThrows(
+      () =>
+        attemptCancelWithForgedOwner({
+          forgedSecretHex: OTHER_SECRET_HEX,
+          orderId,
+          details,
+          blinding,
+          ledgerState: c.ledgerState(),
+        }),
+      'Caller is not the order owner',
+      'matcher-like party with full order details cannot cancel',
+    );
+    assertEq(c.getOrder(orderId).state, OrderState.OPEN, 'order remains OPEN — not cancellable by a non-owner who merely knows its details');
   });
 
   test('cancelOrder: rejects cancelling an already-cancelled order', () => {
@@ -403,6 +531,269 @@ async function main() {
     for (const [, event] of l.eventLog) {
       assertEq(JSON.stringify(Object.keys(event).sort()), JSON.stringify(['kind', 'orderId']), 'event fields');
     }
+  });
+
+  // ── Settlement helpers ────────────────────────────────────────────────────
+  function sampleBuyOrder(overrides: Partial<OrderDetailsValue> = {}): OrderDetailsValue {
+    return sampleOrder({
+      isBuy: true,
+      price: 1_200n,
+      owner: { bytes: deriveOwnerId(Buffer.from(OWNER_SECRET_HEX, 'hex')) },
+      ...overrides,
+    });
+  }
+
+  function sampleSellOrder(overrides: Partial<OrderDetailsValue> = {}): OrderDetailsValue {
+    return sampleOrder({
+      isBuy: false,
+      price: 1_000n,
+      owner: { bytes: deriveOwnerId(Buffer.from(OTHER_SECRET_HEX, 'hex')) },
+      ...overrides,
+    });
+  }
+
+  // Sets up a fresh matcher-owned contract instance with a matching, OPEN
+  // buy/sell pair already created and their witness data registered — the
+  // state a real Matcher would be in right before calling settle(). Callers
+  // can override either side's details to construct failure scenarios.
+  function makeMatchedPair(opts: {
+    buyOverrides?: Partial<OrderDetailsValue>;
+    sellOverrides?: Partial<OrderDetailsValue>;
+  } = {}) {
+    const c = makeContract();
+    const buyId = bytes32(0x50);
+    const sellId = bytes32(0x51);
+    const buyBlinding = bytes32(0x52);
+    const sellBlinding = bytes32(0x53);
+    const buyDetails = sampleBuyOrder(opts.buyOverrides);
+    const sellDetails = sampleSellOrder(opts.sellOverrides);
+    const buyCommitment = computeCommitment(buyDetails, buyBlinding);
+    const sellCommitment = computeCommitment(sellDetails, sellBlinding);
+
+    c.createOrder(buyId, buyCommitment);
+    c.createOrder(sellId, sellCommitment);
+    c.registerWitness(buyId, buyDetails, buyBlinding);
+    c.registerWitness(sellId, sellDetails, sellBlinding);
+
+    return { c, buyId, sellId, buyDetails, sellDetails };
+  }
+
+  // ── settle() — success path ───────────────────────────────────────────────
+  test('settle: fills a matching buy/sell pair and records the fill', () => {
+    const { c, buyId, sellId } = makeMatchedPair();
+    c.settle(buyId, sellId);
+
+    assertEq(c.getOrder(buyId).state, OrderState.FILLED, 'buy order FILLED');
+    assertEq(c.getOrder(sellId).state, OrderState.FILLED, 'sell order FILLED');
+
+    const l = c.ledger();
+    let filledEvents = 0;
+    for (const [, event] of l.eventLog) {
+      if (event.kind === EventKind.ORDER_FILLED) filledEvents++;
+    }
+    assertEq(filledEvents, 2, 'ORDER_FILLED recorded for both orders');
+  });
+
+  // ── settle() — failure paths ──────────────────────────────────────────────
+  test('settle: rejects an asset mismatch between orders', () => {
+    const { c, buyId, sellId } = makeMatchedPair({
+      sellOverrides: { asset: { is_left: true, left: bytes32(0xbb), right: bytes32(0x00) } },
+    });
+    assertThrows(() => c.settle(buyId, sellId), 'Asset mismatch between orders', 'asset mismatch');
+  });
+
+  test('settle: rejects an amount mismatch between orders', () => {
+    const { c, buyId, sellId } = makeMatchedPair({ sellOverrides: { amount: 1n } });
+    assertThrows(() => c.settle(buyId, sellId), 'Amount mismatch between orders', 'amount mismatch');
+  });
+
+  test('settle: rejects a buy price that does not cross the sell price', () => {
+    const { c, buyId, sellId } = makeMatchedPair({ buyOverrides: { price: 900n }, sellOverrides: { price: 1_000n } });
+    assertThrows(() => c.settle(buyId, sellId), 'Buy price does not cross sell price', 'non-crossing price');
+  });
+
+  test('settle: rejects two orders on the same side', () => {
+    const { c, buyId, sellId } = makeMatchedPair({ sellOverrides: { isBuy: true } });
+    assertThrows(() => c.settle(buyId, sellId), 'Sell order is not a sell-side order', 'same-side orders');
+  });
+
+  test('settle: rejects buy and sell orders from the same owner', () => {
+    const { c, buyId, sellId } = makeMatchedPair({
+      sellOverrides: { owner: { bytes: deriveOwnerId(Buffer.from(OWNER_SECRET_HEX, 'hex')) } },
+    });
+    assertThrows(
+      () => c.settle(buyId, sellId),
+      'Buy and sell orders must have different owners',
+      'same-owner settlement',
+    );
+  });
+
+  test('settle: rejects when one side is no longer OPEN', () => {
+    // makeContract() defaults to OWNER_PK_HEX as caller, which owns the buy
+    // side (see sampleBuyOrder) — so that's the side it's authorized to
+    // cancel here.
+    const { c, buyId, sellId } = makeMatchedPair();
+    c.cancelOrder(buyId);
+    assertThrows(() => c.settle(buyId, sellId), 'Buy order is not open', 'non-open buy side');
+  });
+
+  test('settle: rejects when the witnessed sell details do not match its commitment', () => {
+    const { c, buyId, sellId, sellDetails } = makeMatchedPair();
+    // Overwrite the sell side's registered witness with data that doesn't
+    // hash to the commitment it was created with.
+    c.registerWitness(sellId, { ...sellDetails, amount: sellDetails.amount + 1n }, bytes32(0x53));
+    assertThrows(() => c.settle(buyId, sellId), 'Order commitment mismatch', 'sell commitment mismatch');
+  });
+
+  test('settle: a rejected settlement is fully atomic — it does not consume replay protection', () => {
+    const { c, buyId, sellId } = makeMatchedPair({ sellOverrides: { amount: 1n } });
+    assertThrows(() => c.settle(buyId, sellId), 'Amount mismatch between orders', 'first, failing attempt');
+
+    // Re-register correct witness data and retry with a fresh matching pair
+    // built the same way settle() expects; the earlier failure must not
+    // have left behind a stale settledPairs entry or mutated order state.
+    assertEq(c.getOrder(buyId).state, OrderState.OPEN, 'buy order still OPEN after failed settle');
+    assertEq(c.getOrder(sellId).state, OrderState.OPEN, 'sell order still OPEN after failed settle');
+  });
+
+  // ── Replay protection ──────────────────────────────────────────────────────
+  // Once a pair settles, both orders flip OPEN -> FILLED, so a replayed
+  // settle() on the same pair is already rejected by the OPEN-state check
+  // before it ever reaches the settledPairs nullifier check — the state
+  // machine itself is the primary replay defense; settledPairs is
+  // defense-in-depth for any future path that could re-settle without a
+  // state transition. This test proves the pair cannot be replayed either
+  // way.
+  test('settle: rejects re-settling the same order pair (replay attack)', () => {
+    const { c, buyId, sellId } = makeMatchedPair();
+    c.settle(buyId, sellId);
+    assertThrows(() => c.settle(buyId, sellId), 'is not open', 'replayed settlement');
+  });
+
+  // ── Expiry ─────────────────────────────────────────────────────────────────
+  test('expireOrder: marks an order EXPIRED once its expiry time has passed', () => {
+    const c = makeContract(OWNER_PK_HEX);
+    const orderId = bytes32(0x60);
+    const blinding = bytes32(0x61);
+    const details = sampleOrder({ expiresAt: 1_000n });
+    const commitment = computeCommitment(details, blinding);
+
+    c.createOrder(orderId, commitment);
+    c.registerWitness(orderId, details, blinding);
+    c.expireOrder(orderId, 2_000);
+
+    assertEq(c.getOrder(orderId).state, OrderState.EXPIRED, 'state == EXPIRED');
+  });
+
+  test('expireOrder: rejects expiring an order before its expiry time', () => {
+    const c = makeContract(OWNER_PK_HEX);
+    const orderId = bytes32(0x62);
+    const blinding = bytes32(0x63);
+    const details = sampleOrder({ expiresAt: 9_999_999_999n });
+    const commitment = computeCommitment(details, blinding);
+
+    c.createOrder(orderId, commitment);
+    c.registerWitness(orderId, details, blinding);
+    assertThrows(() => c.expireOrder(orderId, 1_000), 'Order has not expired yet', 'premature expiry');
+  });
+
+  test('expireOrder: rejects expiring an order that is not OPEN', () => {
+    const c = makeContract(OWNER_PK_HEX);
+    const orderId = bytes32(0x64);
+    const blinding = bytes32(0x65);
+    const details = sampleOrder({ expiresAt: 1_000n });
+    const commitment = computeCommitment(details, blinding);
+
+    c.createOrder(orderId, commitment);
+    c.registerWitness(orderId, details, blinding);
+    c.cancelOrder(orderId);
+    assertThrows(() => c.expireOrder(orderId, 2_000), 'Order is not open', 'expire a cancelled order');
+  });
+
+  test('cancelOrder: rejects cancelling an order that has already expired', () => {
+    const c = makeContract(OWNER_PK_HEX);
+    const orderId = bytes32(0x66);
+    const blinding = bytes32(0x67);
+    const details = sampleOrder({ expiresAt: 1_000n });
+    const commitment = computeCommitment(details, blinding);
+
+    c.createOrder(orderId, commitment);
+    c.registerWitness(orderId, details, blinding);
+    c.expireOrder(orderId, 2_000);
+    assertThrows(() => c.cancelOrder(orderId), 'Order is not open', 'cancel an expired order');
+  });
+
+  test('settle: rejects when the buy order has expired', () => {
+    const { c, buyId, sellId } = makeMatchedPair({ buyOverrides: { expiresAt: 1_000n } });
+    assertThrows(() => c.settle(buyId, sellId, 2_000), 'Buy order has expired', 'expired buy order');
+  });
+
+  test('settle: rejects when the sell order has expired', () => {
+    const { c, buyId, sellId } = makeMatchedPair({ sellOverrides: { expiresAt: 1_000n } });
+    assertThrows(() => c.settle(buyId, sellId, 2_000), 'Sell order has expired', 'expired sell order');
+  });
+
+  // ── settle() — same-id defense-in-depth ───────────────────────────────────
+  test('settle: rejects settling an order id against itself', () => {
+    const c = makeContract();
+    const orderId = bytes32(0x80);
+    const blinding = bytes32(0x81);
+    const details = sampleOrder();
+    const commitment = computeCommitment(details, blinding);
+    c.createOrder(orderId, commitment);
+    c.registerWitness(orderId, details, blinding);
+    assertThrows(
+      () => c.settle(orderId, orderId),
+      'Buy and sell order ids must differ',
+      'settle rejects buyId == sellId',
+    );
+  });
+
+  // ── Boundary / overflow values ─────────────────────────────────────────────
+  const UINT128_MAX = 340282366920938463463374607431768211455n;
+  const UINT64_MAX = 18446744073709551615n;
+
+  test('settle: fills at the maximum representable Uint<128> price and amount', () => {
+    const { c, buyId, sellId } = makeMatchedPair({
+      buyOverrides: { price: UINT128_MAX, amount: UINT128_MAX },
+      sellOverrides: { price: UINT128_MAX, amount: UINT128_MAX },
+    });
+    c.settle(buyId, sellId);
+    assertEq(c.getOrder(buyId).state, OrderState.FILLED, 'buy order FILLED at Uint<128> max');
+    assertEq(c.getOrder(sellId).state, OrderState.FILLED, 'sell order FILLED at Uint<128> max');
+  });
+
+  test('createOrder/settle: accepts the maximum representable Uint<64> expiresAt without overflow', () => {
+    // UINT64_MAX flows end-to-end as a bigint (struct field -> commitment ->
+    // witness) with no lossy Number conversion, unlike the simulated block
+    // time used elsewhere in this suite (which the runtime's
+    // createCircuitContext takes as a plain `number`, so it cannot itself
+    // represent UINT64_MAX exactly). This checks the boundary value the
+    // type actually allows end-to-end, under an ordinary current time.
+    const { c, buyId, sellId } = makeMatchedPair({
+      buyOverrides: { expiresAt: UINT64_MAX },
+      sellOverrides: { expiresAt: UINT64_MAX },
+    });
+    c.settle(buyId, sellId, 2_000);
+    assertEq(c.getOrder(buyId).state, OrderState.FILLED, 'Uint<64> max expiresAt does not overflow settlement');
+  });
+
+  test('settle: crosses when buy price exactly equals sell price (boundary of >=)', () => {
+    const { c, buyId, sellId } = makeMatchedPair({ buyOverrides: { price: 1_000n }, sellOverrides: { price: 1_000n } });
+    c.settle(buyId, sellId);
+    assertEq(c.getOrder(buyId).state, OrderState.FILLED, 'equal-price orders still cross and fill');
+  });
+
+  test('createOrder/cancelOrder: round-trips correctly with an all-zero orderId, commitment, and blinding', () => {
+    const c = makeContract(OWNER_PK_HEX);
+    const orderId = bytes32(0x00);
+    const blinding = bytes32(0x00);
+    const details = sampleOrder();
+    const commitment = computeCommitment(details, blinding);
+    c.createOrder(orderId, commitment);
+    c.registerWitness(orderId, details, blinding);
+    c.cancelOrder(orderId);
+    assertEq(c.getOrder(orderId).state, OrderState.CANCELLED, 'all-zero-id order cancels normally');
   });
 
   // ─── Report ────────────────────────────────────────────────────────────────
