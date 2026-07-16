@@ -117,7 +117,7 @@ describe('buildExchangeWitnesses', () => {
 
   it('orderDetails/orderBlinding resolve exactly what a disclosed order would produce', () => {
     const order = sampleOrder();
-    const witnesses = buildExchangeWitnesses({ findById: (id) => (id === order.id ? order : undefined) });
+    const witnesses = buildExchangeWitnesses({ findById: (id) => (id === order.id ? order : undefined) }, 'aa'.repeat(32));
 
     const idBytes = new Uint8Array(Buffer.from(order.id, 'hex'));
     const ctx = { privateState: undefined } as never;
@@ -134,13 +134,13 @@ describe('buildExchangeWitnesses', () => {
   });
 
   it('orderDetails throws for an orderId the Matcher was never disclosed', () => {
-    const witnesses = buildExchangeWitnesses({ findById: () => undefined });
+    const witnesses = buildExchangeWitnesses({ findById: () => undefined }, 'aa'.repeat(32));
     const idBytes = new Uint8Array(Buffer.from(hexFill('ff'), 'hex'));
     expect(() => witnesses.orderDetails({ privateState: undefined } as never, idBytes)).toThrow();
   });
 
   it('ownerSecretKey always throws — the Matcher must never hold one (see AUDIT.md threat model)', () => {
-    const witnesses = buildExchangeWitnesses({ findById: () => undefined });
+    const witnesses = buildExchangeWitnesses({ findById: () => undefined }, 'aa'.repeat(32));
     expect(() => witnesses.ownerSecretKey({ privateState: undefined } as never)).toThrow();
   });
 });

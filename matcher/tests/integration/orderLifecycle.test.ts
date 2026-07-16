@@ -36,7 +36,7 @@ function buildInput(opts: DraftOpts): CreateOrderInput {
   const expiresAt = 9_999_999_999n;
   const details = toOrderDetailsValue({ asset: ASSET, side: opts.side, price: opts.price, amount: opts.amount, ownerId: opts.ownerId, expiresAt });
   const commitment = computeCommitmentHex(details, opts.signature);
-  return { id: opts.id, asset: ASSET, side: opts.side, price: opts.price, amount: opts.amount, commitment, ownerId: opts.ownerId, signature: opts.signature, expiresAt };
+  return { id: opts.id, asset: ASSET, side: opts.side, price: opts.price, amount: opts.amount, commitment, ownerId: opts.ownerId, signature: opts.signature, expiresAt, payoutAddress: null };
 }
 
 /**

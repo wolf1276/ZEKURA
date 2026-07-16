@@ -43,7 +43,7 @@ function validPayload() {
 
 function makeFakeOrderService(overrides: Partial<OrderService> = {}): OrderService {
   return {
-    submitOrder: vi.fn(async (): Promise<SubmitOrderResult> => ({ ok: true, order: sampleOrder(), match: null })),
+    submitOrder: vi.fn(async (): Promise<SubmitOrderResult> => ({ ok: true, order: sampleOrder(), match: null, protocolFill: null })),
     cancelOrder: vi.fn((): CancelOrderResult => ({ ok: false, code: 'NOT_FOUND', message: 'no' })),
     getOrder: vi.fn(() => undefined),
     listOpen: vi.fn(() => []),

@@ -47,6 +47,7 @@ function buildInput(opts: DraftOpts): CreateOrderInput {
     ownerId: opts.ownerId,
     signature: opts.signature,
     expiresAt,
+    payoutAddress: null,
   };
 }
 

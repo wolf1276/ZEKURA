@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
-import type { OrderService } from '../services/OrderService.js';
+import type { OrderService, ProtocolFill } from '../services/OrderService.js';
 import type { Match } from '../matcher/Match.js';
 import type { Order } from '../types/Order.js';
 import { createOrderSchema, orderIdParamSchema } from '../utils/validation.js';
@@ -17,6 +17,7 @@ function orderToJSON(order: Order) {
     status: order.status,
     createdAt: order.createdAt,
     expiresAt: order.expiresAt.toString(),
+    payoutAddress: order.payoutAddress ?? null,
   };
 }
 
@@ -29,6 +30,15 @@ function matchToJSON(match: Match) {
     price: match.price.toString(),
     amount: match.amount.toString(),
     matchedAt: match.matchedAt,
+  };
+}
+
+function protocolFillToJSON(fill: ProtocolFill) {
+  return {
+    quoteId: fill.quoteId,
+    price: fill.price.toString(),
+    amount: fill.amount.toString(),
+    txId: fill.txId,
   };
 }
 
@@ -61,6 +71,7 @@ export function registerOrderRoutes(app: FastifyInstance, orderService: OrderSer
     return reply.code(201).send({
       order: orderToJSON(result.order),
       match: result.match ? matchToJSON(result.match) : null,
+      protocolFill: result.protocolFill ? protocolFillToJSON(result.protocolFill) : null,
     });
   });
 

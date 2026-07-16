@@ -11,7 +11,15 @@ export type MatcherEventType =
   | 'order.settling'
   | 'order.filled'
   | 'order.expired'
-  | 'order.failed';
+  | 'order.failed'
+  // Treasury/PPM events — see ppm/PPMService.ts and api/treasury.ts.
+  // order.filled's payload gains a `matchedWith: 'user' | 'protocol'` field
+  // rather than a separate event type, since it's still the same
+  // lifecycle transition from a client's point of view.
+  | 'treasury.deposited'
+  | 'treasury.withdrawn'
+  | 'treasury.reserved'
+  | 'treasury.released';
 
 export interface MatcherEvent<T = unknown> {
   readonly type: MatcherEventType;

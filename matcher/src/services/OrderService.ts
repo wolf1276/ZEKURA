@@ -4,8 +4,9 @@ import type { Match } from '../matcher/Match.js';
 import type { MatchingEngine } from '../matcher/MatchingEngine.js';
 import type { OrderBook } from '../orderbook/OrderBook.js';
 import { buildOrderBookSnapshot, type OrderBookSnapshot } from '../orderbook/snapshot.js';
+import type { PPMService } from '../ppm/PPMService.js';
 import type { OnChainOrderReader } from '../settlement/SettlementClient.js';
-import { assetKey, type Asset } from '../types/Asset.js';
+import { assetKey, type Asset, type Hex32 } from '../types/Asset.js';
 import type { MarketStats } from '../types/MarketStats.js';
 import { isExpired, type Order } from '../types/Order.js';
 import type { CreateOrderInput } from '../utils/validation.js';
@@ -26,8 +27,16 @@ export type SubmitOrderErrorCode =
   | 'COMMITMENT_MISMATCH'
   | 'EXPIRED';
 
+/** A fill against protocol liquidity instead of a second user order — see ppm/PPMService.ts's PpmFillOutcome, which this mirrors once `filled` is true. */
+export interface ProtocolFill {
+  readonly quoteId: Hex32;
+  readonly price: bigint;
+  readonly amount: bigint;
+  readonly txId: string;
+}
+
 export type SubmitOrderResult =
-  | { readonly ok: true; readonly order: Order; readonly match: Match | null }
+  | { readonly ok: true; readonly order: Order; readonly match: Match | null; readonly protocolFill: ProtocolFill | null }
   | { readonly ok: false; readonly code: SubmitOrderErrorCode; readonly message: string };
 
 export type CancelOrderErrorCode = 'NOT_FOUND' | 'NOT_CANCELLABLE';
@@ -47,6 +56,8 @@ export interface OrderServiceDeps {
   readonly logger: Logger;
   /** Called synchronously right after a match is atomically claimed — wired to SettlementService.handleMatch by src/app.ts, kept as a callback to avoid a circular OrderService<->SettlementService dependency. */
   readonly onMatch: (match: Match) => void;
+  /** Optional: when absent, an order that finds no user counterparty simply rests OPEN, same as before the Treasury/PPM existed. */
+  readonly ppmService?: PPMService;
   readonly now?: () => number;
 }
 
@@ -75,6 +86,7 @@ export class OrderService {
   private readonly broadcaster: Broadcaster;
   private readonly logger: Logger;
   private readonly onMatch: (match: Match) => void;
+  private readonly ppmService: PPMService | undefined;
   private readonly now: () => number;
 
   constructor(deps: OrderServiceDeps) {
@@ -87,6 +99,7 @@ export class OrderService {
     this.broadcaster = deps.broadcaster;
     this.logger = deps.logger;
     this.onMatch = deps.onMatch;
+    this.ppmService = deps.ppmService;
     this.now = deps.now ?? (() => Date.now());
   }
 
@@ -171,7 +184,46 @@ export class OrderService {
 
     const match = this.matchingEngine.onOrderArrived(order, lookup, this.nowSeconds());
     if (!match) {
-      return { ok: true, order, match: null };
+      // No user counterparty — offer it to the PPM before it rests, exactly
+      // matching priority 2/3 from the spec (user orders first, protocol
+      // liquidity only as a fallback). Any failure here (no PPM configured,
+      // no quote, insufficient liquidity, a failed reserve/settle
+      // transaction) is treated identically to "no match found": the order
+      // simply rests OPEN. See ppm/PPMService.ts's own doc comment.
+      if (this.ppmService) {
+        const ppmResult = await this.ppmService.attemptFill(order);
+        if (ppmResult.filled) {
+          const applied = this.orderRepo.updateStatus(order.id, 'FILLED', ['OPEN']);
+          if (applied) {
+            this.orderBook.remove(order.id);
+            const filled: Order = { ...order, status: 'FILLED' };
+            this.broadcaster.broadcast('order.filled', {
+              order: filled,
+              matchedWith: 'protocol',
+              quoteId: ppmResult.quoteId,
+              price: ppmResult.price.toString(),
+              amount: ppmResult.amount.toString(),
+              txId: ppmResult.txId,
+            });
+            return {
+              ok: true,
+              order: filled,
+              match: null,
+              protocolFill: { quoteId: ppmResult.quoteId, price: ppmResult.price, amount: ppmResult.amount, txId: ppmResult.txId },
+            };
+          }
+          // The on-chain settleWithProtocol already succeeded even though
+          // this local CAS lost a race (structurally shouldn't happen — see
+          // the equivalent user-match fallback below) — log loudly rather
+          // than silently reporting the order as merely resting when it is
+          // in fact already FILLED on-chain.
+          this.logger.error(
+            { orderId: order.id, ppmResult },
+            'settleWithProtocol succeeded on-chain but the local OPEN -> FILLED CAS lost a race',
+          );
+        }
+      }
+      return { ok: true, order, match: null, protocolFill: null };
     }
 
     const claimed = this.db.transaction(() => {
@@ -188,7 +240,7 @@ export class OrderService {
       // but if it ever does, the order stays OPEN and simply waits for the
       // next arrival/removal to be reconsidered rather than being lost.
       this.logger.error({ match }, 'failed to atomically claim a match — one or both orders were no longer OPEN');
-      return { ok: true, order, match: null };
+      return { ok: true, order, match: null, protocolFill: null };
     }
 
     this.orderBook.remove(match.buyOrderId);
@@ -196,7 +248,7 @@ export class OrderService {
     this.broadcaster.broadcast('order.matched', match);
     this.onMatch(match);
 
-    return { ok: true, order, match };
+    return { ok: true, order, match, protocolFill: null };
   }
 
   /**

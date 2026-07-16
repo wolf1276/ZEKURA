@@ -23,6 +23,8 @@ export interface MatcherConfig {
    * funded operator wallet is expected on preview/preprod. See MATCHER.md.
    */
   readonly matcherSeedEnvVar: string;
+  /** Wallet addresses (UserAddress strings) authorized to perform admin-gated Treasury actions over HTTP — see api/middleware/adminAuth.ts. Empty by default: no admin endpoints are usable until this is explicitly configured. */
+  readonly adminAddresses: ReadonlySet<string>;
 }
 
 function parseIntEnv(value: string | undefined, fallback: number): number {
@@ -39,6 +41,16 @@ function parseBoolEnv(value: string | undefined, fallback: boolean): boolean {
   return value.trim().toLowerCase() === 'true' || value.trim() === '1';
 }
 
+function parseAddressListEnv(value: string | undefined): ReadonlySet<string> {
+  if (!value || value.trim() === '') return new Set();
+  return new Set(
+    value
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0),
+  );
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): MatcherConfig {
   return {
     port: parseIntEnv(env.MATCHER_PORT, 4000),
@@ -51,5 +63,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MatcherConfig 
       retryDelayMs: parseIntEnv(env.MATCHER_SETTLEMENT_RETRY_DELAY_MS, 5000),
     },
     matcherSeedEnvVar: 'MATCHER_WALLET_SEED',
+    adminAddresses: parseAddressListEnv(env.MATCHER_ADMIN_ADDRESSES),
   };
 }

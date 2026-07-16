@@ -25,7 +25,7 @@ function buildInput(id: string, side: 'BUY' | 'SELL', price: bigint, amount: big
   const expiresAt = 9_999_999_999n;
   const details = toOrderDetailsValue({ asset: ASSET, side, price, amount, ownerId, expiresAt });
   const commitment = computeCommitmentHex(details, signature);
-  return { id, asset: ASSET, side, price, amount, commitment, ownerId, signature, expiresAt };
+  return { id, asset: ASSET, side, price, amount, commitment, ownerId, signature, expiresAt, payoutAddress: null };
 }
 
 /** Delays every on-chain read by one macrotask, so two concurrent submitOrder() calls genuinely interleave at the `await` point rather than running back-to-back. */

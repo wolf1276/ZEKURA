@@ -12,6 +12,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import Fastify from 'fastify';
+
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
 import { findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
 import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
@@ -21,15 +23,27 @@ import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config
 import { WebSocket } from 'ws';
 
 import type { Contract as ExchangeContract } from '../../contracts/managed/exchange/contract/index.js';
-import { getDeployment, getOrCreateSeed, resolveNetwork } from '../../src/network.js';
+import { getDeployment, getOrCreateAdminSecret, getOrCreateSeed, resolveNetwork } from '../../src/network.js';
 import { createWallet, persistWalletState, unshieldedToken } from '../../src/wallet.js';
+import { AdminAuth } from './api/middleware/adminAuth.js';
 import { buildApp } from './app.js';
 import { MatchRepository } from './db/repositories/MatchRepository.js';
 import { OrderRepository } from './db/repositories/OrderRepository.js';
+import { ReservationRepository } from './db/repositories/ReservationRepository.js';
+import { TreasuryRepository } from './db/repositories/TreasuryRepository.js';
 import { openDatabase } from './db/sqlite.js';
 import { MatchingEngine } from './matcher/MatchingEngine.js';
 import { PriceTimePriorityStrategy } from './matcher/MatchingStrategy.js';
 import { OrderBook } from './orderbook/OrderBook.js';
+import { DEFAULT_PRICING_CONFIG, PricingEngine } from './ppm/PricingEngine.js';
+import { PPMService } from './ppm/PPMService.js';
+import {
+  TreasuryClient,
+  type EitherAddressValue,
+  type OnChainTreasuryReader,
+  type PpmCircuitCaller,
+} from './ppm/TreasuryClient.js';
+import { MarketDataService } from './services/MarketDataService.js';
 import { OrderService } from './services/OrderService.js';
 import { SettlementService } from './services/SettlementService.js';
 import {
@@ -41,7 +55,9 @@ import {
   type SettleCircuitCaller,
 } from './settlement/SettlementClient.js';
 import { SettlementQueue } from './settlement/SettlementQueue.js';
+import type { Asset, Hex32 } from './types/Asset.js';
 import { loadConfig } from './utils/config.js';
+import { bytes32ToHex, hexToBytes32 } from './utils/hex.js';
 import { createLogger } from './utils/logger.js';
 import type { Broadcaster, MatcherEventType } from './websocket/SocketServer.js';
 import { SocketServer } from './websocket/SocketServer.js';
@@ -76,9 +92,32 @@ function findRepoRoot(startDir: string): string {
   }
 }
 
+/**
+ * Binds `config.port`/`config.host` immediately, before wallet sync or any
+ * other slow startup work runs. Without this, nothing listens on the port
+ * until `main()` reaches the real `app.listen()` near the bottom — on a
+ * platform like Railway that proxies to the port and health-checks it, a
+ * from-genesis wallet sync (which can run for a long time on first boot)
+ * means the whole window looks like a crashed/unresponsive deploy from the
+ * outside, even though the process is healthy and actively syncing. Every
+ * request gets a fast, honest 503 instead of a proxy-level connection
+ * failure. Closed and replaced by the real app once startup finishes.
+ */
+async function startBootstrapServer(config: ReturnType<typeof loadConfig>) {
+  const bootstrap = Fastify({ logger: false });
+  bootstrap.get('/health', async () => ({ status: 'syncing' }));
+  bootstrap.setNotFoundHandler((_request, reply) => {
+    reply.code(503).send({ error: 'SYNCING', message: 'Matcher is starting up (wallet sync in progress); try again shortly.' });
+  });
+  await bootstrap.listen({ port: config.port, host: config.host });
+  return bootstrap;
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger('matcher', { level: config.logLevel, pretty: config.prettyLogs });
+  const bootstrap = await startBootstrapServer(config);
+  logger.info({ port: config.port, host: config.host }, 'bootstrap server listening (syncing wallet next)');
 
   const repoRoot = findRepoRoot(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -151,7 +190,15 @@ async function main(): Promise<void> {
   // being settled) at call time, so one shared witnesses object serves
   // every settle() call for the life of the process — see
   // settlement/SettlementClient.ts's doc comment.
-  const witnesses = buildExchangeWitnesses({ findById: (id) => orderRepo.findById(id) });
+  //
+  // getOrCreateAdminSecret resolves TREASURY_ADMIN_SECRET first, then the
+  // same per-network secret persisted by `npm run deploy` in
+  // .midnight-state.json — so by default the Matcher submits admin-gated
+  // Treasury transactions as the same identity that bootstrapped the
+  // Treasury at deploy time. Set TREASURY_ADMIN_SECRET explicitly on
+  // preview/preprod rather than relying on the local state file.
+  const treasuryAdminSecretHex = getOrCreateAdminSecret(network, { cwd: repoRoot });
+  const witnesses = buildExchangeWitnesses({ findById: (id) => orderRepo.findById(id) }, treasuryAdminSecretHex);
   const compiledContractBase = CompiledContract.make<ExchangeContract<undefined>>('exchange', Exchange.Contract);
   const compiledContractWithWitnesses = CompiledContract.withWitnesses(compiledContractBase, witnesses);
   const compiledContract = CompiledContract.withCompiledFileAssets(compiledContractWithWitnesses, zkConfigPath);
@@ -185,25 +232,103 @@ async function main(): Promise<void> {
     },
   };
 
+  // deriveAssetKey collapses a matcher Asset (isLeft/left/right) into the
+  // same Bytes<32> the contract's own Treasury ledger Maps and
+  // receiveUnshielded/sendUnshielded's tokenType argument use — see
+  // contracts/exchange.compact's deriveAssetKey doc comment. Computed via
+  // the compiled contract's exported pureCircuits, so this can never drift
+  // from what the contract itself would compute.
+  const toOnChainAssetKey = (asset: Asset): Hex32 => {
+    const either = { is_left: asset.isLeft, left: hexToBytes32(asset.left), right: hexToBytes32(asset.right) };
+    return bytes32ToHex(Exchange.pureCircuits.deriveAssetKey(either));
+  };
+
+  const treasuryReader: OnChainTreasuryReader = {
+    async getLiquidity(assetKey: Hex32) {
+      const contractState = await providers.publicDataProvider.queryContractState(deployment.address);
+      if (!contractState) return { balance: 0n, reserved: 0n, available: 0n };
+      const ledgerState = Exchange.ledger(contractState.data);
+      const keyBytes = hexToBytes32(assetKey);
+      const balance: bigint = ledgerState.treasuryBalances.member(keyBytes) ? ledgerState.treasuryBalances.lookup(keyBytes) : 0n;
+      const reserved: bigint = ledgerState.treasuryReserved.member(keyBytes) ? ledgerState.treasuryReserved.lookup(keyBytes) : 0n;
+      return { balance, reserved, available: balance - reserved };
+    },
+  };
+
+  const ppmCaller: PpmCircuitCaller = {
+    async reserveLiquidity(quoteId, assetKey, amount, price, expiresAt) {
+      const tx = await foundContract.callTx.reserveLiquidity(quoteId, assetKey, amount, price, expiresAt);
+      return { public: { txId: String(tx.public.txId) } };
+    },
+    async releaseLiquidity(quoteId) {
+      const tx = await foundContract.callTx.releaseLiquidity(quoteId);
+      return { public: { txId: String(tx.public.txId) } };
+    },
+    async releaseExpiredLiquidity(quoteId) {
+      const tx = await foundContract.callTx.releaseExpiredLiquidity(quoteId);
+      return { public: { txId: String(tx.public.txId) } };
+    },
+    async settleWithProtocol(orderId, quoteId, recipient) {
+      const tx = await foundContract.callTx.settleWithProtocol(orderId, quoteId, recipient);
+      return { public: { txId: String(tx.public.txId) } };
+    },
+    async depositTreasury(assetKey, amount) {
+      const tx = await foundContract.callTx.depositTreasury(assetKey, amount);
+      return { public: { txId: String(tx.public.txId) } };
+    },
+    async withdrawTreasury(assetKey, amount, recipient: EitherAddressValue) {
+      const tx = await foundContract.callTx.withdrawTreasury(assetKey, amount, recipient);
+      return { public: { txId: String(tx.public.txId) } };
+    },
+  };
+
   const orderBook = new OrderBook();
   const matchingEngine = new MatchingEngine(orderBook, new PriceTimePriorityStrategy());
   const settlementClient = new SettlementClient(settleCaller, onChainReader, logger);
   const settlementQueue = new SettlementQueue(config.settlement, logger);
+  const treasuryClient = new TreasuryClient(ppmCaller, treasuryReader, logger);
+  const reservationRepo = new ReservationRepository(db);
+  const treasuryRepo = new TreasuryRepository(db);
+  const pricingConfig = DEFAULT_PRICING_CONFIG;
+  const STATS_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-  // Two small forward references break what would otherwise be
-  // OrderService <-> SocketServer <-> Fastify app and OrderService <->
-  // SettlementService construction cycles: both dependencies are only
-  // ever *invoked* during request/settlement handling, long after every
+  // Three forward references break what would otherwise be a cycle:
+  // OrderService optionally depends on PPMService, which depends on
+  // MarketDataService, which reads OrderService's own orderbook/stats
+  // methods — plus the pre-existing OrderService <-> SocketServer <-> Fastify
+  // app and OrderService <-> SettlementService cycles. All of these are only
+  // ever *invoked* during request/settlement/PPM handling, long after every
   // object below has finished being constructed, so a closure over a
-  // not-yet-assigned `let` is sufficient — no event emitter or DI
-  // container needed for two call sites.
-  // eslint-disable-next-line prefer-const -- assigned once, later (line ~201); must stay `let` for the closure above to observe it
+  // not-yet-assigned `let` is sufficient for each — no event emitter or DI
+  // container needed.
+  // eslint-disable-next-line prefer-const -- assigned once, later; must stay `let` for the closures above to observe it
   let socketServer: SocketServer | undefined;
   const broadcaster: Broadcaster = {
     broadcast: <T>(type: MatcherEventType, payload: T) => socketServer?.broadcast(type, payload),
   };
-  // eslint-disable-next-line prefer-const -- assigned once, later (line ~190); must stay `let` for the closure above to observe it
+  // eslint-disable-next-line prefer-const -- assigned once, later; must stay `let` for the closure above to observe it
   let settlementService: SettlementService | undefined;
+  // eslint-disable-next-line prefer-const -- assigned once, later; must stay `let` for the closures below to observe it
+  let orderServiceRef: OrderService | undefined;
+
+  const marketDataService = new MarketDataService({
+    getOrderBookSnapshot: (asset) => orderServiceRef!.getOrderBookSnapshot(asset),
+    getMarketStats: (asset, windowMs) => orderServiceRef!.getMarketStats(asset, windowMs),
+    treasuryClient,
+    toOnChainAssetKey,
+  });
+  const pricingEngine = new PricingEngine(pricingConfig);
+  const ppmService = new PPMService({
+    marketDataService,
+    pricingEngine,
+    treasuryClient,
+    reservationRepo,
+    treasuryRepo,
+    broadcaster,
+    logger,
+    toOnChainAssetKey,
+    statsWindowMs: STATS_WINDOW_MS,
+  });
 
   const orderService = new OrderService({
     db,
@@ -215,7 +340,9 @@ async function main(): Promise<void> {
     broadcaster,
     logger,
     onMatch: (match) => settlementService?.handleMatch(match),
+    ppmService,
   });
+  orderServiceRef = orderService;
 
   settlementService = new SettlementService({
     db,
@@ -227,7 +354,22 @@ async function main(): Promise<void> {
     logger,
   });
 
-  const app = buildApp({ orderService, logger: true });
+  // The same secret buildExchangeWitnesses' adminSecretKey witness uses —
+  // this is the ONE on-chain admin identity every admin-gated circuit call
+  // is actually authorized under, regardless of which allowlisted HTTP
+  // caller triggered it (see api/admin.ts's AdminRoutesDeps doc comment).
+  const onChainAdminActorId = bytes32ToHex(Exchange.pureCircuits.deriveAdminId(Buffer.from(treasuryAdminSecretHex, 'hex')));
+  const adminAuth = new AdminAuth({ allowedAddresses: config.adminAddresses });
+  if (config.adminAddresses.size === 0) {
+    logger.warn('MATCHER_ADMIN_ADDRESSES is empty — no wallet is authorized to use the admin Treasury endpoints');
+  }
+
+  const app = buildApp({
+    orderService,
+    treasury: { treasuryClient, treasuryRepo, pricingConfig, toOnChainAssetKey },
+    admin: { adminAuth, treasuryClient, treasuryRepo, broadcaster, logger, onChainAdminActorId },
+    logger: true,
+  });
   socketServer = new SocketServer(app.server, logger);
 
   const recovered = settlementService.recoverPendingSettlements();
@@ -235,6 +377,16 @@ async function main(): Promise<void> {
     logger.info({ recovered }, 'recovered in-flight settlements from a previous run');
   }
 
+  // Proactively reclaims expired-but-unswept PPM reservations — defense in
+  // depth alongside releaseExpiredLiquidity's own on-chain permissionless
+  // callability (see contracts/exchange.compact and ppm/PPMService.ts).
+  const EXPIRY_SWEEP_INTERVAL_MS = 60_000;
+  const expirySweepInterval = setInterval(() => {
+    ppmService.sweepExpiredReservations().catch((error) => logger.error({ error }, 'PPM expiry sweep failed'));
+  }, EXPIRY_SWEEP_INTERVAL_MS);
+  expirySweepInterval.unref();
+
+  await bootstrap.close();
   await app.listen({ port: config.port, host: config.host });
   logger.info({ port: config.port, host: config.host }, 'matcher server listening');
 

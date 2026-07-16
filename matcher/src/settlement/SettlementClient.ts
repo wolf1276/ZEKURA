@@ -74,7 +74,7 @@ export interface WitnessOrderSource {
  * safe and, if it were ever reached, is exactly the bug we want to fail
  * loudly on rather than silently return a wrong value for.
  */
-export function buildExchangeWitnesses(source: WitnessOrderSource): Witnesses<undefined> {
+export function buildExchangeWitnesses(source: WitnessOrderSource, treasuryAdminSecretHex: string): Witnesses<undefined> {
   const resolve = (orderIdBytes: Uint8Array): Order => {
     const id = bytes32ToHex(orderIdBytes);
     const order = source.findById(id);
@@ -83,6 +83,7 @@ export function buildExchangeWitnesses(source: WitnessOrderSource): Witnesses<un
     }
     return order;
   };
+  const adminSecretBytes = hexToBytes32(treasuryAdminSecretHex);
 
   return {
     orderDetails: (context, orderIdBytes) => [context.privateState, toOrderDetailsValue(resolve(orderIdBytes))],
@@ -93,10 +94,19 @@ export function buildExchangeWitnesses(source: WitnessOrderSource): Witnesses<un
           'and the Matcher must never hold an owner secret key regardless (see AUDIT.md threat model).',
       );
     },
+    // Unlike ownerSecretKey, this one is real: depositTreasury/withdrawTreasury/
+    // addAdmin/removeAdmin are admin-gated circuits the Matcher submits on an
+    // HTTP-authenticated admin's behalf (see api/admin.ts's challenge/signature
+    // auth — the browser never sees this secret, only the Matcher process does).
+    // reserveLiquidity/releaseLiquidity/settleWithProtocol never call this
+    // witness at all (see contracts/exchange.compact — only the two admin
+    // circuits do), so it sitting unused for every PPM-driven call is expected.
+    adminSecretKey: (context) => [context.privateState, adminSecretBytes],
   };
 }
 
-function classifyThrown(error: unknown): SettlementAttemptResult {
+/** Exported for reuse by ppm/TreasuryClient.ts — the same CallTxFailedError-vs-everything-else classification applies to any callTx.<circuit>() call, not just settle(). */
+export function classifyThrown(error: unknown): SettlementAttemptResult {
   if (error instanceof CallTxFailedError) {
     return {
       outcome: 'callFailed',
