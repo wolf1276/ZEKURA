@@ -10,6 +10,14 @@ export enum OrderState { OPEN, FILLED, CANCELLED, EXPIRED }
 
 export enum EventKind { ORDER_CREATED, ORDER_CANCELLED, ORDER_FILLED }
 
+// Treasury transaction kinds recorded in treasuryHistory. RESERVE/RELEASE/
+// EXECUTE are protocol-internal (PPM-driven); DEPOSIT/WITHDRAW are the only
+// admin-gated ones.
+export enum TxKind { DEPOSIT, WITHDRAW, RESERVE, RELEASE, EXECUTE }
+
+// Lifecycle of a single PPM liquidity reservation, keyed by quoteId.
+export enum ReservationState { OPEN, RELEASED, EXECUTED }
+
 // ---------------------------------------------------------------------------                  
 // Structs
 // ---------------------------------------------------------------------------
@@ -47,6 +55,36 @@ struct OrderDetails {
   expiresAt: Uint<64>
 }
 
+// Append-only Treasury history row. `actor` holds a deriveAdminId(...)
+// identity for DEPOSIT/WITHDRAW, or the quoteId for RESERVE/RELEASE/EXECUTE
+// — its meaning is disambiguated by `kind`. `seq` (not wall-clock time —
+// this contract has no on-chain time read, only blockTimeGte threshold
+// checks, see Reservation.expiresAt below) makes every row's commitment
+// hash unique so treasuryHistory keys never collide.
+export struct TreasuryTx {
+  kind: TxKind,
+  assetKey: Bytes<32>,
+  amount: Uint<128>,
+  actor: Bytes<32>,
+  seq: Uint<64>
+}
+
+// A single PPM liquidity hold against one asset's available Treasury
+// balance. `assetKey` doubles as the raw unshielded token type passed to
+// receiveUnshielded/sendUnshielded — see deriveAssetKey below for how a
+// user order's `asset` field maps to this same key. `price` is the PPM's
+// quoted price for this reservation, checked against the filled order's
+// price in settleWithProtocol exactly the way settle() checks two user
+// orders cross. `expiresAt` bounds how long the PPM may hold this liquidity
+// unused before anyone can reclaim it via releaseExpiredLiquidity.
+export struct Reservation {
+  assetKey: Bytes<32>,
+  amount: Uint<128>,
+  price: Uint<128>,
+  expiresAt: Uint<64>,
+  state: ReservationState
+}
+
 // ---------------------------------------------------------------------------
 // Ledger
 // ---------------------------------------------------------------------------
@@ -61,6 +99,33 @@ export ledger settledPairs: Set<Bytes<32>>;
 // which is unique per order because each event kind can only ever be
 // recorded once for a given order (the state machine below enforces this).
 export ledger eventLog: Map<Bytes<32>, OrderEvent>;
+
+// ---------------------------------------------------------------------------
+// Treasury (Module 5)
+// ---------------------------------------------------------------------------
+
+// Per-asset custody, keyed by deriveAssetKey(OrderDetails.asset) (== the raw
+// unshielded token type for that asset). Both start completely empty — no
+// entry exists for an asset until it is first deposited into, and
+// balanceOf/reservedOf below treat a missing entry as exactly 0. There is no
+// seeded liquidity of any kind.
+export ledger treasuryBalances: Map<Bytes<32>, Uint<128>>;
+export ledger treasuryReserved: Map<Bytes<32>, Uint<128>>;
+
+// Admin identity commitments (deriveAdminId(...) outputs), bootstrapped by
+// the constructor and rotatable afterward by an existing admin. Deploy-time
+// configuration of *who is authorized*, never a balance — funding the
+// Treasury is a separate, later, real transaction.
+export ledger admins: Set<Bytes<32>>;
+
+// Append-only Treasury audit log + the monotonic counter that keeps its keys
+// unique (see TreasuryTx.seq above).
+export ledger treasuryHistory: Map<Bytes<32>, TreasuryTx>;
+export ledger treasuryHistorySeq: Uint<64>;
+
+// Open/released/executed PPM liquidity holds, keyed by matcher-generated
+// quoteId.
+export ledger reservations: Map<Bytes<32>, Reservation>;
 
 // ---------------------------------------------------------------------------
 // Witnesses
@@ -87,6 +152,25 @@ witness orderBlinding(orderId: Bytes<32>): Bytes<32>;
 // owner.
 witness ownerSecretKey(): Bytes<32>;
 
+// Reveals the caller's own admin secret, used only to *derive* (never
+// disclose) the identity checked against the `admins` Set. Same rationale as
+// ownerSecretKey above: ownPublicKey() has no cryptographic binding to the
+// actual transaction signer (AUDIT.md P0-1), so admin authorization must go
+// through a witness+commitment check, not a raw signer/public-key check.
+witness adminSecretKey(): Bytes<32>;
+
+// ---------------------------------------------------------------------------
+// Constructor
+// ---------------------------------------------------------------------------
+
+// Bootstraps exactly one admin identity at deploy time. This is
+// authorization configuration, not liquidity — every balance/reservation
+// ledger declared above still starts at its zero value. The bootstrapped
+// admin can add/remove further admins via addAdmin/removeAdmin below.
+constructor(initialAdmin: Bytes<32>) {
+  admins.insert(disclose(initialAdmin));
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -104,6 +188,62 @@ export pure circuit deriveOwnerId(secretKey: Bytes<32>): Bytes<32> {
 circuit recordEvent(kind: EventKind, orderId: Bytes<32>): [] {
   const key = persistentHash<OrderEvent>(OrderEvent { kind: kind, orderId: orderId });
   eventLog.insert(key, OrderEvent { kind: kind, orderId: orderId });
+}
+
+// Collapses an order's Either<shielded, unshielded>-encoded asset id into
+// the flat Bytes<32> key the Treasury's per-asset maps and
+// receiveUnshielded/sendUnshielded's tokenType argument both use. Exported
+// (and pure) so the Matcher can compute the identical key off-chain, the
+// same way deriveOwnerId is exported for wallet-side use.
+export pure circuit deriveAssetKey(asset: Either<Bytes<32>, Bytes<32> >): Bytes<32> {
+  return persistentHash<Either<Bytes<32>, Bytes<32> > >(asset);
+}
+
+// Derives a caller's DApp-specific admin identity from their own secret.
+// Domain-separated from deriveOwnerId's "zekura:owner:id" tag so an admin id
+// can never be confused for (or collide with) an order-owner id.
+export pure circuit deriveAdminId(secretKey: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32> > >([pad(32, "zekura:admin:id"), secretKey]);
+}
+
+// Authorization check shared by every admin-gated circuit below. Returns the
+// caller's admin id so callers can pass it straight into recordTreasuryTx.
+circuit requireAdmin(): Bytes<32> {
+  const adminId = disclose(deriveAdminId(adminSecretKey()));
+  assert(admins.member(adminId), "Caller is not an authorized administrator");
+  return adminId;
+}
+
+// Map.lookup requires Map.member to already hold, but an asset the Treasury
+// has never touched simply has no entry — these two helpers are what let
+// every other Treasury circuit treat "no entry" and "0" identically without
+// repeating the member-check branch everywhere.
+circuit balanceOf(assetKey: Bytes<32>): Uint<128> {
+  if (treasuryBalances.member(assetKey)) {
+    return treasuryBalances.lookup(assetKey);
+  } else {
+    return 0;
+  }
+}
+
+circuit reservedOf(assetKey: Bytes<32>): Uint<128> {
+  if (treasuryReserved.member(assetKey)) {
+    return treasuryReserved.lookup(assetKey);
+  } else {
+    return 0;
+  }
+}
+
+// Appends one row to the Treasury audit log. Every Treasury-mutating circuit
+// below calls this last, after its own state changes have already been
+// applied, so the log is a faithful record of what happened rather than a
+// separate source of truth that could drift from it.
+circuit recordTreasuryTx(kind: TxKind, assetKey: Bytes<32>, amount: Uint<128>, actor: Bytes<32>): [] {
+  const seq = disclose((treasuryHistorySeq + 1) as Uint<64>);
+  treasuryHistorySeq = seq;
+  const tx = TreasuryTx { kind: kind, assetKey: assetKey, amount: amount, actor: actor, seq: seq };
+  const key = persistentHash<TreasuryTx>(tx);
+  treasuryHistory.insert(key, tx);
 }
 
 // Recomputes an order's commitment from its witnessed private details and
@@ -230,3 +370,232 @@ export circuit settle(buyOrderId: Bytes<32>, sellOrderId: Bytes<32>): [] {
   recordEvent(EventKind.ORDER_FILLED, buyId);
   recordEvent(EventKind.ORDER_FILLED, sellId);
 }
+
+// ---------------------------------------------------------------------------
+// Module 5: Treasury — admin management
+// ---------------------------------------------------------------------------
+
+export circuit addAdmin(newAdmin: Bytes<32>): [] {
+  requireAdmin();
+  admins.insert(disclose(newAdmin));
+}
+
+export circuit removeAdmin(admin: Bytes<32>): [] {
+  requireAdmin();
+  const target = disclose(admin);
+  assert(admins.member(target), "Not an admin");
+  // Never let the admin set go to zero — that would permanently brick every
+  // admin-gated circuit below (deposit, withdraw, addAdmin itself), with no
+  // way to recover it.
+  assert(admins.size() > 1, "Cannot remove the last admin");
+  admins.remove(target);
+}
+
+// ---------------------------------------------------------------------------
+// Module 5: Treasury — funding (admin-gated)
+// ---------------------------------------------------------------------------
+
+export circuit depositTreasury(assetKey: Bytes<32>, amount: Uint<128>): [] {
+  const adminId = requireAdmin();
+  const key = disclose(assetKey);
+  const amt = disclose(amount);
+  assert(amt > 0, "Deposit amount must be positive");
+
+  // Pulls real tNIGHT (or whichever unshielded token assetKey names) out of
+  // the caller's own transaction and into this contract's custody. This is
+  // the only place tNIGHT enters the Treasury — there is no other way for
+  // treasuryBalances to become non-zero.
+  receiveUnshielded(key, amt);
+
+  const current = balanceOf(key);
+  treasuryBalances.insert(key, disclose((current + amt) as Uint<128>));
+
+  recordTreasuryTx(TxKind.DEPOSIT, key, amt, adminId);
+}
+
+export circuit withdrawTreasury(
+  assetKey: Bytes<32>,
+  amount: Uint<128>,
+  recipient: Either<ContractAddress, UserAddress>
+): [] {
+  const adminId = requireAdmin();
+  const key = disclose(assetKey);
+  const amt = disclose(amount);
+  assert(amt > 0, "Withdrawal amount must be positive");
+
+  const current = balanceOf(key);
+  const reserved = reservedOf(key);
+  // Liquidity currently held against an open PPM reservation can never be
+  // withdrawn out from under it.
+  assert(disclose((amt + reserved) as Uint<128>) <= current, "Insufficient available treasury balance");
+
+  treasuryBalances.insert(key, disclose((current - amt) as Uint<128>));
+  sendUnshielded(key, amt, disclose(recipient));
+
+  recordTreasuryTx(TxKind.WITHDRAW, key, amt, adminId);
+}
+
+// ---------------------------------------------------------------------------
+// Module 5: Treasury — PPM liquidity reservation
+// ---------------------------------------------------------------------------
+
+// Called by the Matcher's PPM component before quoting a fill against
+// protocol liquidity. Same trust level as settle() itself (no
+// caller-identity check — see AUDIT.md): the only thing that gates this is
+// the state machine and the actual available balance below, exactly the way
+// settle() is gated only by order commitments, not by who submits the
+// transaction.
+export circuit reserveLiquidity(
+  quoteId: Bytes<32>,
+  assetKey: Bytes<32>,
+  amount: Uint<128>,
+  price: Uint<128>,
+  expiresAt: Uint<64>
+): [] {
+  const id = disclose(quoteId);
+  const key = disclose(assetKey);
+  const amt = disclose(amount);
+
+  assert(!reservations.member(id), "Reservation already exists");
+  assert(amt > 0, "Reservation amount must be positive");
+
+  const current = balanceOf(key);
+  const reserved = reservedOf(key);
+  // The one and only liquidity-fabrication guard: a reservation can never
+  // exceed what's actually sitting in the Treasury and not already
+  // committed elsewhere. The Matcher turns this assert's failure into
+  // "Protocol liquidity unavailable." for the frontend — it never invents a
+  // quote past this point.
+  assert(disclose((amt + reserved) as Uint<128>) <= current, "Protocol liquidity unavailable");
+
+  reservations.insert(id, Reservation {
+    assetKey: key,
+    amount: amt,
+    price: disclose(price),
+    expiresAt: disclose(expiresAt),
+    state: ReservationState.OPEN
+  });
+  treasuryReserved.insert(key, disclose((reserved + amt) as Uint<128>));
+
+  recordTreasuryTx(TxKind.RESERVE, key, amt, id);
+}
+
+// Un-reserves a still-open, still-unused hold — e.g. its order got cancelled,
+// or a user counterparty filled it first. Same no-caller-check trust level
+// as reserveLiquidity.
+export circuit releaseLiquidity(quoteId: Bytes<32>): [] {
+  const id = disclose(quoteId);
+  assert(reservations.member(id), "Reservation does not exist");
+
+  const r = reservations.lookup(id);
+  assert(r.state == ReservationState.OPEN, "Reservation is not open");
+
+  reservations.insert(id, Reservation {
+    assetKey: r.assetKey, amount: r.amount, price: r.price, expiresAt: r.expiresAt,
+    state: ReservationState.RELEASED
+  });
+  const reserved = reservedOf(r.assetKey);
+  treasuryReserved.insert(r.assetKey, disclose((reserved - r.amount) as Uint<128>));
+
+  recordTreasuryTx(TxKind.RELEASE, r.assetKey, r.amount, id);
+}
+
+// Permissionless safety valve, time-gated exactly like expireOrder() above:
+// if the PPM never comes back to release or execute a reservation before its
+// quoted expiry, anyone can reclaim the held liquidity back to available.
+export circuit releaseExpiredLiquidity(quoteId: Bytes<32>): [] {
+  const id = disclose(quoteId);
+  assert(reservations.member(id), "Reservation does not exist");
+
+  const r = reservations.lookup(id);
+  assert(r.state == ReservationState.OPEN, "Reservation is not open");
+  assert(blockTimeGte(r.expiresAt), "Reservation has not expired yet");
+
+  reservations.insert(id, Reservation {
+    assetKey: r.assetKey, amount: r.amount, price: r.price, expiresAt: r.expiresAt,
+    state: ReservationState.RELEASED
+  });
+  const reserved = reservedOf(r.assetKey);
+  treasuryReserved.insert(r.assetKey, disclose((reserved - r.amount) as Uint<128>));
+
+  recordTreasuryTx(TxKind.RELEASE, r.assetKey, r.amount, id);
+}
+
+// ---------------------------------------------------------------------------
+// Module 5: Treasury — settling a user order against protocol liquidity
+// ---------------------------------------------------------------------------
+
+// The protocol-liquidity counterpart to settle() above: fills one resting
+// user order against an open PPM reservation instead of a second user order.
+// Moves real tNIGHT between the Treasury and the user for the reserved leg,
+// exactly mirroring settle()'s two-sided FILLED transition and event log.
+export circuit settleWithProtocol(
+  orderId: Bytes<32>,
+  quoteId: Bytes<32>,
+  recipient: Either<ContractAddress, UserAddress>
+): [] {
+  const oid = disclose(orderId);
+  const qid = disclose(quoteId);
+
+  assert(orders.member(oid), "Order does not exist");
+  const record = orders.lookup(oid);
+  assert(record.state == OrderState.OPEN, "Order is not open");
+
+  assert(reservations.member(qid), "Reservation does not exist");
+  const r = reservations.lookup(qid);
+  assert(r.state == ReservationState.OPEN, "Reservation is not open");
+  assert(!blockTimeGte(r.expiresAt), "Quote has expired");
+
+  const details = verifyOrderCommitment(oid, record.commitment);
+  assert(!blockTimeGte(disclose(details.expiresAt)), "Order has expired");
+
+  assert(deriveAssetKey(details.asset) == r.assetKey, "Asset mismatch between order and reservation");
+  assert(disclose(details.amount) == r.amount, "Amount mismatch between order and reservation");
+
+  // Same crossing rule as settle(), just against the PPM's single quoted
+  // price instead of a second order's price.
+  if (disclose(details.isBuy)) {
+    assert(disclose(details.price) >= r.price, "Buy price does not cross protocol quote");
+  } else {
+    assert(disclose(details.price) <= r.price, "Sell price does not cross protocol quote");
+  }
+
+  orders.insert(oid, OrderRecord { commitment: record.commitment, state: OrderState.FILLED });
+  reservations.insert(qid, Reservation {
+    assetKey: r.assetKey, amount: r.amount, price: r.price, expiresAt: r.expiresAt,
+    state: ReservationState.EXECUTED
+  });
+
+  const reserved = reservedOf(r.assetKey);
+  treasuryReserved.insert(r.assetKey, disclose((reserved - r.amount) as Uint<128>));
+
+  const current = balanceOf(r.assetKey);
+  if (disclose(details.isBuy)) {
+    // Protocol is the seller: it pays the asset out to the buyer, balance
+    // goes down.
+    assert(r.amount <= current, "Protocol liquidity unavailable");
+    treasuryBalances.insert(r.assetKey, disclose((current - r.amount) as Uint<128>));
+    sendUnshielded(r.assetKey, r.amount, disclose(recipient));
+  } else {
+    // Protocol is the buyer: it receives the asset from the seller, balance
+    // goes up.
+    receiveUnshielded(r.assetKey, r.amount);
+    treasuryBalances.insert(r.assetKey, disclose((current + r.amount) as Uint<128>));
+  }
+
+  recordTreasuryTx(TxKind.EXECUTE, r.assetKey, r.amount, qid);
+  recordEvent(EventKind.ORDER_FILLED, oid);
+}
+
+// No getTreasuryBalance/getTreasuryReserved/getReservation read circuits:
+// treasuryBalances, treasuryReserved, and reservations are public ledger
+// Maps, so — exactly like getOrder()'s own callers already prefer doing for
+// `orders` (see matcher/ARCHITECTURE.md's security model: "read for free via
+// the indexer, never a paid getOrder() transaction") — every value here is
+// readable for free straight from the indexer's contract-state query,
+// without spending a transaction on a circuit whose only job would be to
+// echo back state that's already public. Every exported circuit also adds
+// real weight to the one-time contract-deployment transaction (a verifier
+// key per circuit); on this local devnet's block limits that bill comes due
+// immediately, which is what caught this — keeping the read surface off-chain
+// isn't just an optimization here, it's what makes deployment fit at all.

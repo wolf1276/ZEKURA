@@ -63,6 +63,9 @@ const exchangeWitnesses: Witnesses<undefined> = {
   ownerSecretKey: () => {
     throw new Error('ownerSecretKey witness not implemented in cli.ts — this menu is read-only (see file header).');
   },
+  adminSecretKey: () => {
+    throw new Error('adminSecretKey witness not implemented in cli.ts — this menu is read-only (see file header).');
+  },
 };
 
 // The contract module is loaded via a runtime dynamic import (so we can

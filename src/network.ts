@@ -32,6 +32,10 @@ export interface NetworkState {
   activeNetwork: NetworkId;
   wallets: Partial<Record<NetworkId, { seed: string; createdAt: string }>>;
   deployments: Partial<Record<NetworkId, DeploymentRecord>>;
+  // The Treasury module's bootstrap admin secret per network — see
+  // getOrCreateAdminSecret below. Optional so existing .midnight-state.json
+  // files from before the Treasury module remain valid without migration.
+  adminSecrets?: Partial<Record<NetworkId, { secret: string; createdAt: string }>>;
 }
 
 export const STATE_FILE_NAME = '.midnight-state.json';
@@ -228,6 +232,39 @@ export function getOrCreateSeed(network: NetworkId, opts: SeedOptions = {}): str
   };
   saveState(next, { cwd });
   return seed;
+}
+
+// Bootstraps (and persists) the secret behind the Treasury module's initial
+// admin identity for `network`, mirroring getOrCreateSeed's own
+// env-var-first, then-persisted-file, then-freshly-generated resolution
+// order. TREASURY_ADMIN_SECRET lets an operator supply their own secret
+// (e.g. to make a real wallet's identity the admin instead of a
+// generated one); otherwise one is generated once and persisted so
+// re-running setup/deploy against the same network keeps the same admin.
+export function getOrCreateAdminSecret(network: NetworkId, opts: SeedOptions = {}): string {
+  const env = opts.env ?? process.env;
+  const cwd = opts.cwd ?? process.cwd();
+
+  const fromEnv = env.TREASURY_ADMIN_SECRET;
+  if (fromEnv) return fromEnv;
+
+  const existing = loadState({ cwd });
+  const persisted = existing?.adminSecrets?.[network]?.secret;
+  if (persisted) return persisted;
+
+  const secret = crypto.randomBytes(32).toString('hex');
+  const next: NetworkState = existing ?? {
+    version: STATE_VERSION,
+    activeNetwork: network,
+    wallets: {},
+    deployments: {},
+  };
+  next.adminSecrets = {
+    ...next.adminSecrets,
+    [network]: { secret, createdAt: new Date().toISOString() },
+  };
+  saveState(next, { cwd });
+  return secret;
 }
 
 export function getDeployment(network: NetworkId, opts: FsOptions = {}): DeploymentRecord | null {

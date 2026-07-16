@@ -162,6 +162,12 @@ const OTHER_PK_HEX = '11'.repeat(32);
 const OWNER_SECRET_HEX = 'aa'.repeat(32);
 const OTHER_SECRET_HEX = 'bb'.repeat(32);
 
+// Bootstraps the Treasury module's required admin — irrelevant to every test
+// in this file (see tests/treasury.test.ts), but the contract's constructor
+// requires one regardless.
+const DUMMY_ADMIN_SECRET_HEX = 'cc'.repeat(32);
+const DUMMY_ADMIN_ID = new Uint8Array(32).fill(0xcc);
+
 async function main() {
   const mod: any = await import(pathToFileURL(contractPath).href);
   const { Contract, ledger, OrderState, EventKind, pureCircuits } = mod;
@@ -192,10 +198,17 @@ async function main() {
       ownerSecretKey: (context: any) => {
         return [context.privateState, Buffer.from(ownerSecretHex, 'hex')];
       },
+      // Not exercised by any test in this Level 1 suite (see
+      // tests/treasury.test.ts for admin/Treasury coverage) — only present
+      // because Contract requires every declared witness to have an
+      // implementation.
+      adminSecretKey: (context: any) => {
+        return [context.privateState, Buffer.from(DUMMY_ADMIN_SECRET_HEX, 'hex')];
+      },
     };
     const contract = new Contract(witnesses);
     const constructorContext = rt.createConstructorContext(undefined, callerPkHex);
-    const init = contract.initialState(constructorContext);
+    const init = contract.initialState(constructorContext, DUMMY_ADMIN_ID);
     let ctx = rt.createCircuitContext(
       rt.dummyContractAddress(),
       callerPkHex,
@@ -294,9 +307,10 @@ async function main() {
       orderDetails: (context: any) => [context.privateState, opts.details],
       orderBlinding: (context: any) => [context.privateState, opts.blinding],
       ownerSecretKey: (context: any) => [context.privateState, Buffer.from(opts.forgedSecretHex, 'hex')],
+      adminSecretKey: (context: any) => [context.privateState, Buffer.from(DUMMY_ADMIN_SECRET_HEX, 'hex')],
     };
     const attacker = new Contract(witnesses);
-    const init = attacker.initialState(rt.createConstructorContext(undefined, OTHER_PK_HEX));
+    const init = attacker.initialState(rt.createConstructorContext(undefined, OTHER_PK_HEX), DUMMY_ADMIN_ID);
     const attackerCtx = rt.createCircuitContext(
       rt.dummyContractAddress(),
       OTHER_PK_HEX,
@@ -506,11 +520,23 @@ async function main() {
     const l = c.ledger();
 
     // The ledger type itself must expose no field capable of carrying order
-    // details — only orders/settledPairs/eventLog, matching the "public
-    // ledger stores ONLY orderId, commitment, state" architecture rule.
+    // details — order-related state is only ever orders/settledPairs/
+    // eventLog (the Treasury fields alongside them carry no order data
+    // either — see tests/treasury.test.ts), matching the "public ledger
+    // stores ONLY orderId, commitment, state" architecture rule.
     assertEq(
       JSON.stringify(Object.keys(l).sort()),
-      JSON.stringify(['eventLog', 'orders', 'settledPairs']),
+      JSON.stringify([
+        'admins',
+        'eventLog',
+        'orders',
+        'reservations',
+        'settledPairs',
+        'treasuryBalances',
+        'treasuryHistory',
+        'treasuryHistorySeq',
+        'treasuryReserved',
+      ]),
       'ledger top-level fields',
     );
 

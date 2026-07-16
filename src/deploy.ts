@@ -7,7 +7,7 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { resolveNetwork, getOrCreateSeed, recordDeployment } from './network';
+import { resolveNetwork, getOrCreateSeed, getOrCreateAdminSecret, recordDeployment } from './network';
 import { createWallet, persistWalletState, startCheckpointing, unshieldedToken, type WalletContext } from './wallet';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocket } from 'ws';
@@ -91,7 +91,19 @@ const exchangeWitnesses = {
   ownerSecretKey: () => {
     throw new Error('ownerSecretKey witness not implemented in deploy.ts (deployment does not execute circuits).');
   },
+  adminSecretKey: () => {
+    throw new Error('adminSecretKey witness not implemented in deploy.ts (deployment does not execute circuits).');
+  },
 };
+
+// The Treasury module's bootstrap admin — deploy-time *authorization*
+// configuration, not liquidity (treasuryBalances/treasuryReserved above
+// still start completely empty regardless of who this is). See
+// getOrCreateAdminSecret's doc comment for how the underlying secret is
+// resolved/persisted; whoever holds it can call depositTreasury/
+// withdrawTreasury/addAdmin/removeAdmin once deployed (via src/cli.ts).
+const adminSecretHex = getOrCreateAdminSecret(network);
+const initialAdminId: Uint8Array = Exchange.pureCircuits.deriveAdminId(Buffer.from(adminSecretHex, 'hex'));
 
 // The contract module is loaded via a runtime dynamic import (so the
 // "not compiled" check above can run first), which makes Exchange.Contract's
@@ -329,7 +341,7 @@ async function main() {
     try {
       deployed = await deployContract(providers, {
         compiledContract: compiledContract as any,
-        args: [],
+        args: [initialAdminId],
       });
       break;
     } catch (err: any) {
@@ -391,6 +403,14 @@ async function main() {
   const contractAddress = deployed.deployTxData.public.contractAddress;
   console.log('  ✅ Contract deployed successfully!\n');
   console.log(`  Contract Address: ${contractAddress}\n`);
+  console.log('─── Treasury Admin ─────────────────────────────────────────────\n');
+  console.log(`  Bootstrap admin id: ${Buffer.from(initialAdminId).toString('hex')}`);
+  console.log(
+    '  Secret persisted in .midnight-state.json (adminSecrets) — or set via TREASURY_ADMIN_SECRET.\n' +
+      '  This is the only identity that can call depositTreasury/withdrawTreasury/addAdmin/removeAdmin\n' +
+      '  until it adds more admins itself. The Treasury holds 0 balance until a real depositTreasury\n' +
+      '  transaction is submitted — deploying does not fund it.\n',
+  );
 
   recordDeployment(network, contractAddress, address.toString());
   console.log('  Saved to .midnight-state.json\n');
