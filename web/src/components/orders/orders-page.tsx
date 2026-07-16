@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Download, Search, X } from "lucide-react";
+import { toast } from "sonner";
 import { PageShell, Card } from "@/components/layout/page-shell";
 import { OrderStatusBadge } from "@/components/trade/order-status-badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useWallet } from "@/wallet/walletHooks";
 import { matcher } from "@/services/matcher/matcherClient";
 import {
@@ -47,14 +49,26 @@ function toCsv(orders: Order[]): string {
 export function OrdersPage() {
   const { balanceFor } = useWallet();
   const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState(0);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
 
-  useEffect(() => matcher.subscribe(setOrders), []);
+  useEffect(
+    () =>
+      matcher.subscribe((next) => {
+        setOrders(next);
+        setLoading(!matcher.isReady());
+      }),
+    [],
+  );
 
   const handleCancel = useCallback((id: string) => {
-    void matcher.cancelOrder(id);
+    matcher.cancelOrder(id).catch((err: unknown) => {
+      toast.error("Couldn't cancel order", {
+        description: err instanceof Error ? err.message : "Unknown error — try again.",
+      });
+    });
   }, []);
 
   const filtered = useMemo(() => {
@@ -168,7 +182,15 @@ export function OrdersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.length === 0 ? (
+                  {loading ? (
+                    Array.from({ length: 3 }, (_, i) => (
+                      <tr key={i} className="border-b border-border/60 last:border-0">
+                        <td colSpan={8} className="px-3 py-3">
+                          <Skeleton className="h-5 w-full" />
+                        </td>
+                      </tr>
+                    ))
+                  ) : rows.length === 0 ? (
                     <tr>
                       <td
                         colSpan={8}

@@ -67,9 +67,15 @@ class MatcherClient {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private started = false;
+  private ready = false;
 
   list(): Order[] {
     return Array.from(this.orders.values());
+  }
+
+  /** False until the initial open-orders snapshot has resolved (success or failure) — lets consumers distinguish "still loading" from "genuinely no orders." */
+  isReady(): boolean {
+    return this.ready;
   }
 
   subscribe(listener: OrderListener): () => void {
@@ -114,11 +120,13 @@ class MatcherClient {
     try {
       const { orders } = await api.listOpenOrders();
       for (const o of orders) this.upsertOrder(toOrder(o), { emit: false });
-      this.emitOrders();
     } catch {
       // The live WS feed will still populate orders as events arrive; an
       // initial-list fetch failure (e.g. Matcher briefly unreachable) isn't
       // fatal.
+    } finally {
+      this.ready = true;
+      this.emitOrders();
     }
   }
 

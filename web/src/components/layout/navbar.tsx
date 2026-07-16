@@ -108,7 +108,7 @@ export function Navbar() {
       <div className="flex h-14 items-center justify-between gap-4 px-4 md:px-6">
         <div className="flex items-center gap-8">
           <Link
-            href="#"
+            href="/"
             className="flex items-center gap-2 font-semibold tracking-tight text-foreground"
           >
             {/* eslint-disable-next-line @next/next/no-img-element -- next/image can't optimize .ico */}

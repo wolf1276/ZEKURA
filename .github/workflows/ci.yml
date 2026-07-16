@@ -24,14 +24,43 @@ jobs:
       - name: Pin Compact compiler version
         run: compact update 0.31.1
 
-      - name: Install dependencies
+      - name: Install root + matcher workspace dependencies
         run: npm ci
 
       - name: Compile contract
         run: npm run compile
 
-      - name: Typecheck
+      - name: Typecheck (root)
         run: npm run build
 
-      - name: Run offline test suite
+      - name: Run contract test suite (root)
         run: npm run test
+
+      - name: Typecheck (matcher)
+        run: npm run typecheck --workspace=matcher
+
+      - name: Lint (matcher)
+        run: npm run lint --workspace=matcher
+
+      - name: Run matcher test suite
+        run: npm run test --workspace=matcher
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Typecheck (web)
+        working-directory: web
+        run: npm run typecheck
+
+      - name: Lint (web)
+        working-directory: web
+        run: npm run lint
+
+      - name: Run web test suite
+        working-directory: web
+        run: npm run test
+
+      - name: Production build (web)
+        working-directory: web
+        run: npm run build

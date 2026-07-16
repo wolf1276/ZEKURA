@@ -211,3 +211,38 @@ wallet extension with funds, which this automated pass cannot provide (see
 wallet-extension-driven trade through the actual `web/` UI, including a
 literal wallet connect/disconnect/reconnect click-through. This remains a
 human-in-the-loop step.
+
+---
+
+## Post-deployment re-verification — 2026-07-16, 14:41 IST (Level 3 pass)
+
+Independent re-check performed as part of a Level 3 production-readiness
+pass, a few minutes after the Level 2 entry above (same day, separate
+session) — repeated here rather than assumed still valid, since "was live
+earlier today" is not the same claim as "is live now":
+
+- `npm run test:e2e -- --network preprod` — reconnected via
+  `findDeployedContract` against `wss://rpc.preprod.midnight.network`, read
+  live ledger state: ✅ passed, contract address unchanged
+  (`7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1`).
+- `npm run test:e2e -- --network preview` — same check against
+  `wss://rpc.preview.midnight.network`: ✅ passed, contract address unchanged
+  (`7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984`).
+- Root (`npm run compile`, `npm run build`, `npm run test`), matcher
+  (`typecheck`, `lint`, `test` — 185/185), and web (`typecheck`, `lint`,
+  `test` — 19/19, `build`) all re-verified green in this same pass (see
+  README.md's "Run Tests"/"Production readiness" sections for current
+  counts — web gained a real test suite in this pass, previously zero).
+- `web/`'s production build (`next build`) was started (`next start -p
+  3100`) and driven headlessly (Playwright + system Chrome) across all six
+  real routes (`/`, `/dashboard`, `/trade`, `/orders`, `/activity`,
+  `/settings`) plus the new `/not-found` page, at both a 1440×900 desktop
+  and a 390×844 mobile viewport: all returned the expected HTTP status,
+  zero console/page errors, and zero horizontal overflow at either
+  viewport.
+- **Not exercised in this pass either** (same constraint as the entry
+  above, unchanged): a literal wallet-extension-driven click-through. This
+  automated environment has no browser extension or funded interactive
+  wallet session available to it — only headless, extension-free
+  navigation and direct SDK/API calls, which is what all of the checks
+  above (and the Level 2 entry's live trade) actually are.
