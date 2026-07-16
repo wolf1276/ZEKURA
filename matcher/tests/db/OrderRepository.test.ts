@@ -23,6 +23,7 @@ function sampleOrder(overrides: Partial<Order> = {}): Order {
     status: 'OPEN',
     createdAt: 1_700_000_000_000,
     expiresAt: 9_999_999_999n,
+    payoutAddress: null,
     ...overrides,
   };
 }

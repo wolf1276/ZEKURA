@@ -19,6 +19,7 @@ interface OrderRow {
   status: string;
   created_at: number;
   expires_at: string;
+  payout_address: string | null;
 }
 
 function rowToOrder(row: OrderRow): Order {
@@ -34,6 +35,7 @@ function rowToOrder(row: OrderRow): Order {
     status: row.status as OrderStatus,
     createdAt: row.created_at,
     expiresAt: BigInt(row.expires_at),
+    payoutAddress: row.payout_address,
   };
 }
 
@@ -46,9 +48,9 @@ export class OrderRepository {
       .prepare(
         `INSERT INTO orders
            (id, asset_is_left, asset_left, asset_right, asset_key, side, price, amount,
-            commitment, owner_id, signature, status, created_at, expires_at)
+            commitment, owner_id, signature, status, created_at, expires_at, payout_address)
          VALUES (@id, @asset_is_left, @asset_left, @asset_right, @asset_key, @side, @price, @amount,
-                 @commitment, @owner_id, @signature, @status, @created_at, @expires_at)`,
+                 @commitment, @owner_id, @signature, @status, @created_at, @expires_at, @payout_address)`,
       )
       .run({
         id: order.id,
@@ -65,6 +67,7 @@ export class OrderRepository {
         status: order.status,
         created_at: order.createdAt,
         expires_at: order.expiresAt.toString(),
+        payout_address: order.payoutAddress ?? null,
       });
   }
 

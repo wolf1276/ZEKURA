@@ -44,6 +44,11 @@ export const createOrderSchema = z.object({
   ownerId: hex32Schema,
   signature: hex32Schema,
   expiresAt: bigintStringSchema(UINT64_MAX, 'expiresAt'),
+  // Real unshielded UserAddress, opt-in — required only for this order to be
+  // eligible for a protocol-liquidity fill on the BUY side (see
+  // types/Order.ts's payoutAddress doc comment). Omitted/null orders can
+  // still match/settle normally against another user order.
+  payoutAddress: hex32Schema.nullish().transform((v) => v ?? null),
 });
 
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
@@ -68,6 +73,60 @@ export const tradesQuerySchema = assetQuerySchema.extend({
 export const statsQuerySchema = assetQuerySchema.extend({
   /** Rolling window size, defaulting to 24h; capped at 7 days to bound the scan over `matches`. */
   windowMs: z.coerce.number().int().min(1000).max(7 * DAY_MS).default(DAY_MS),
+});
+
+// ─── Treasury / admin (see api/middleware/adminAuth.ts, api/admin.ts, api/treasury.ts) ───
+
+/** Real wallet addresses/keys — not Bytes<32> ids, so these don't use hex32Schema. */
+const walletAddressSchema = z.string().min(1);
+const publicKeySchema = z.string().min(1);
+const signatureSchema = z.string().min(1);
+
+export const adminChallengeRequestSchema = z.object({
+  address: walletAddressSchema,
+});
+
+export const adminAuthSchema = z.object({
+  address: walletAddressSchema,
+  publicKey: publicKeySchema,
+  signature: signatureSchema,
+});
+
+const UINT128_MAX_TREASURY = UINT128_MAX;
+
+export const adminDepositSchema = z.object({
+  auth: adminAuthSchema,
+  assetKey: hex32Schema,
+  amount: bigintStringSchema(UINT128_MAX_TREASURY, 'amount'),
+});
+
+export const adminWithdrawSchema = z.object({
+  auth: adminAuthSchema,
+  assetKey: hex32Schema,
+  amount: bigintStringSchema(UINT128_MAX_TREASURY, 'amount'),
+  /** encodeUserAddress(...) output, hex — where the withdrawn funds go. */
+  recipientUserAddress: hex32Schema,
+});
+
+/**
+ * Treasury/PPM balance routes are queryable two ways: by the raw on-chain
+ * assetKey directly (what depositTreasury/withdrawTreasury/reserveLiquidity
+ * actually key their ledger Maps by — e.g. the real native tNIGHT token
+ * type), or by an order-shaped {isLeft,left,right} triple, which gets
+ * hashed via deriveAssetKey the same way settleWithProtocol binds a
+ * reservation to a specific order's asset. These are NOT the same
+ * key — deriveAssetKey(asset) is a hash of the Either struct, never equal to
+ * a raw token type — so which form to use depends on what's actually being
+ * looked up (see api/treasury.ts).
+ */
+export const treasuryAssetQuerySchema = z.union([
+  z.object({ assetKey: hex32Schema }),
+  assetQuerySchema,
+]);
+
+export const treasuryHistoryQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).default(50),
+  kind: z.enum(['DEPOSIT', 'WITHDRAW', 'RESERVE', 'RELEASE', 'EXECUTE']).optional(),
 });
 
 export { hex32Schema };

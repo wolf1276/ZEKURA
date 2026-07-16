@@ -28,6 +28,15 @@ export interface Order {
   readonly createdAt: number;
   /** Uint<64> on-chain, unix seconds — compared via the contract's blockTimeGte. */
   readonly expiresAt: bigint;
+  /**
+   * Real unshielded UserAddress (Bytes<32> hex), optionally supplied by the
+   * order's owner for protocol-liquidity payouts only — see
+   * ppm/TreasuryClient.ts and db/schema.ts's comment on why this can't be
+   * bound on-chain to OrderDetails.owner. null means this order can never be
+   * filled by the PPM (it can still match/settle against another user order
+   * normally, which needs no address at all).
+   */
+  readonly payoutAddress?: Hex32 | null;
 }
 
 export function isExpired(order: Pick<Order, 'expiresAt'>, nowSeconds: bigint): boolean {

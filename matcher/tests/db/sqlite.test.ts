@@ -16,7 +16,13 @@ describe('openDatabase', () => {
   it('opens an in-memory database and applies the schema', () => {
     const db = openDatabase(':memory:');
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>;
-    expect(tables.map((t) => t.name).sort()).toEqual(['matches', 'orders', 'settlements']);
+    expect(tables.map((t) => t.name).sort()).toEqual([
+      'matches',
+      'orders',
+      'ppm_reservations',
+      'settlements',
+      'treasury_events',
+    ]);
     db.close();
   });
 
