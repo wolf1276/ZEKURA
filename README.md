@@ -168,6 +168,108 @@ npm run cli           # read-only CLI: look up an order by ID, check balance
 npm run test:e2e       # smoke check against the deployed contract
 ```
 
+## Wallet
+
+The frontend (`web/`) connects through the standard Midnight DApp Connector
+API (`@midnight-ntwrk/dapp-connector-api`), the same interface every
+Midnight-compatible wallet extension implements. Two wallets are recognized
+by name (`web/src/wallet/walletRegistry.ts`), any other connector-compatible
+wallet injected under `window.midnight` is picked up generically:
+
+- **1AM Wallet** (`window.midnight['1am']`) — recommended, shielded by
+  default, implements in-browser proving (`getProvingProvider()`).
+- **Lace** (`window.midnight.mnLace`) — does not implement
+  `getProvingProvider()`; the app falls back to the local proof server
+  (`NEXT_PUBLIC_PROOF_SERVER_URL`, default `http://127.0.0.1:6300`) for
+  Lace sessions only (`web/src/services/midnight/exchangeContract.ts`).
+
+`web/src/wallet/WalletProvider.tsx` covers the full connection lifecycle:
+
+- **Connect** — via the wallet picker modal; the `connect()` call happens
+  synchronously inside the click so the extension's approval pop-up isn't
+  blocked, with a generous timeout as a safety net against a hung extension.
+- **Disconnect** — clears local session state and the "reconnect on load"
+  flag.
+- **Reconnect** — if the browser was previously connected, the same wallet
+  is silently reconnected on page load once the Network Manager has settled
+  on a network; a rejected/failed silent reconnect falls back to `idle`
+  (the manual picker) without surfacing an error, since there's no user
+  gesture to show one against.
+- **Loading / error / wrong-network states** — `WalletStatus` models
+  `idle` / `connecting` / `connected` / `unsupported-network` /
+  `disconnected` / `unavailable` / `error` explicitly; connector failures
+  (rejected request, blocked permission, disconnected mid-call, etc.) are
+  normalized into a `WalletError` with a user-facing message
+  (`web/src/wallet/walletConnector.ts`).
+- **Network sync** — the DApp Connector v4 API has no push events for
+  network changes, so `getConnectionStatus()` is polled; whatever network
+  the wallet reports is adopted as the app's own (`web/src/network/`), so
+  there is no "wrong network" state to get stuck in — only
+  `unsupported-network` for a wallet-reported id Zekura has no
+  `NetworkConfig` for (i.e. anything other than `preview`/`preprod`).
+
+## Preview
+
+Preview is the default network the web app runs against. To run against it:
+
+```bash
+cd web
+cp .env.example .env.local   # if you haven't already
+npm install
+npm run dev
+```
+
+`NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREVIEW` in `web/.env.local` must
+point at a live Preview deployment (see the Contract Address table above).
+Point your wallet extension at Preview and connect — the app adopts
+whatever network the wallet reports (see "Wallet" above), it isn't chosen
+by an env var at runtime.
+
+## Preprod
+
+Same app, pointed at Preprod instead — switch networks from the wallet
+picker/Network Manager in the navbar, or start fresh against Preprod
+directly:
+
+```bash
+cd web
+npm run dev
+```
+
+`NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREPROD` in `web/.env.local` must
+point at a live Preprod deployment (see the Contract Address table above —
+currently `7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1`).
+Switch your wallet extension to Preprod; the app follows. For read-only
+sanity checks against Preprod without a browser at all, use
+`npm run test:e2e -- --network preprod` from the repo root (see
+Deployment.md).
+
+## Demo Instructions
+
+A full, real (non-mocked) trade round trip through the web app:
+
+1. **Start infrastructure**: `docker compose up -d --wait proof-server`
+   (repo root), then start the Matcher (`cd matcher && npm run dev`) and the
+   web app (`cd web && npm run dev`).
+2. **Connect a wallet** (1AM or Lace) via the navbar — see "Wallet" above
+   for what each connection state looks like.
+3. **Submit an order** on the Trade page — this signs and submits a real
+   `createOrder(orderId, commitment)` circuit call through the connected
+   wallet (`web/src/services/midnight/exchangeContract.ts`), no mocks. The
+   wallet's approval pop-up is the actual proof/sign/submit step.
+4. **Watch it propagate live**: the Trade page's order status timeline, the
+   Orders page, the Activity feed, and the Overview page all update
+   automatically from the same Matcher WebSocket feed
+   (`web/src/services/matcher/matcherClient.ts`) — no manual refresh.
+5. **Verify the privacy property**: once the order appears, use the
+   "Verify privacy on-chain" panel under the order status timeline. It
+   fetches the order's *actual* live ledger record from the connected
+   network's indexer and shows it side by side with the order's real
+   private fields (side, price, amount, expiry) that this app already holds
+   locally — observably confirming that only `{commitment, state}` ever
+   reached the chain (see "Privacy Model" above and
+   `web/src/services/midnight/orderVerification.ts`).
+
 ## Initial Idea
 
 _(placeholder — fill in with the original concept writeup)_
