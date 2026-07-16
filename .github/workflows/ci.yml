@@ -105,6 +105,13 @@ jobs:
           name: compiled-contract
           path: contracts/managed/exchange
 
+      # The compiled contract at contracts/managed/exchange/contract/index.js lives
+      # outside web/, so its own `import '@midnight-ntwrk/compact-runtime'` resolves
+      # via root node_modules (Node/Turbopack walk up from the file's own directory),
+      # not web/node_modules. Both installs are required.
+      - name: Install root dependencies
+        run: npm ci
+
       - name: Install web dependencies
         working-directory: web
         run: npm ci
