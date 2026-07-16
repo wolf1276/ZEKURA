@@ -5,8 +5,40 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  COMPACT_VERSION: '0.31.1'
+
 jobs:
-  build-and-test:
+  # Compiles contracts/exchange.compact once and shares the output with every
+  # downstream job — root, matcher, and web all statically import types from
+  # contracts/managed/exchange/contract/index.js, so none of them can
+  # typecheck, test, or build without it.
+  compile-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Compact toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf https://github.com/midnightntwrk/compact/releases/latest/download/compact-installer.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Pin Compact compiler version
+        run: compact update "$COMPACT_VERSION"
+
+      - name: Compile contract
+        run: compact compile contracts/exchange.compact contracts/managed/exchange
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compiled-contract
+          path: contracts/managed/exchange
+          retention-days: 1
+
+  # Root package: typecheck + the hand-rolled contract test suite
+  # (tests/exchange.test.ts), driven directly through @midnight-ntwrk/compact-runtime.
+  contract-tests:
+    needs: compile-contract
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,26 +47,38 @@ jobs:
         with:
           node-version: '22'
 
-      # Official install method per https://docs.midnight.network/getting-started/installation
-      - name: Install Compact toolchain
-        run: |
-          curl --proto '=https' --tlsv1.2 -LsSf https://github.com/midnightntwrk/compact/releases/latest/download/compact-installer.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Pin Compact compiler version
-        run: compact update 0.31.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: compiled-contract
+          path: contracts/managed/exchange
 
       - name: Install root + matcher workspace dependencies
         run: npm ci
-
-      - name: Compile contract
-        run: npm run compile
 
       - name: Typecheck (root)
         run: npm run build
 
       - name: Run contract test suite (root)
         run: npm run test
+
+  # Matcher: the confidential off-chain order book and settlement engine.
+  matcher:
+    needs: compile-contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: compiled-contract
+          path: contracts/managed/exchange
+
+      - name: Install root + matcher workspace dependencies
+        run: npm ci
 
       - name: Typecheck (matcher)
         run: npm run typecheck --workspace=matcher
@@ -44,6 +88,22 @@ jobs:
 
       - name: Run matcher test suite
         run: npm run test --workspace=matcher
+
+  # Web: the Next.js trading UI (standalone package, own lockfile).
+  web:
+    needs: compile-contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: compiled-contract
+          path: contracts/managed/exchange
 
       - name: Install web dependencies
         working-directory: web

@@ -787,22 +787,43 @@ fuzzing harness exists in this project today.
 ## CI/CD
 
 [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) runs on every push
-to `main` and every pull request. A single `ubuntu-latest` job:
+to `main` and every pull request, split into **four independent jobs** so
+each package reports its own pass/fail status instead of one monolithic
+check:
 
-1. Installs Node 22 and the pinned Compact toolchain (`compact update 0.31.1`,
-   via the [official installer](https://docs.midnight.network/getting-started/installation)).
-2. `npm ci` at the repo root (root + matcher workspace).
-3. **Compile** — `npm run compile` (contract).
-4. **Typecheck** — root (`tsc --noEmit`), matcher, and web (`next typegen && tsc --noEmit`).
-5. **Lint** — matcher and web (`eslint`). The root package has no lint script.
-6. **Test** — root (34), matcher (185), web (19) — all three suites.
-7. **Build** — a real production Next.js build for `web`.
+```mermaid
+flowchart LR
+    A["compile-contract<br/>installs the Compact toolchain,<br/>compiles exchange.compact,<br/>uploads the artifact"]
+    B["contract-tests<br/>root typecheck + 34 tests"]
+    C["matcher<br/>typecheck + lint + 185 tests"]
+    D["web<br/>typecheck + lint + 19 tests + production build"]
+    A --> B
+    A --> C
+    A --> D
+```
+
+Root, matcher, and web all statically import types from the compiled
+`contracts/managed/exchange/contract/index.js` (`src/cli.ts`,
+`matcher/src/index.ts`, `web/src/services/midnight/exchangeContract.ts`, and
+more), so none of them can typecheck, test, or build without it. `compile-contract`
+compiles the contract once and shares the output via
+`actions/upload-artifact`/`download-artifact`; `contract-tests`, `matcher`,
+and `web` then run **in parallel**, each downloading that artifact.
+
+| Job | Steps |
+|---|---|
+| `compile-contract` | Install the pinned Compact toolchain (`compact update 0.31.1`) → `compact compile` → upload `contracts/managed/exchange` as an artifact |
+| `contract-tests` | Download the artifact → `npm ci` (root) → `npm run build` (typecheck) → `npm run test` (34 tests) |
+| `matcher` | Download the artifact → `npm ci` (root) → `npm run typecheck --workspace=matcher` → `npm run lint --workspace=matcher` → `npm run test --workspace=matcher` (185 tests) |
+| `web` | Download the artifact → `npm ci` (in `web/`) → `npm run typecheck` → `npm run lint` → `npm run test` (19 tests) → `npm run build` (production Next.js build) |
 
 A compilation failure, a type error, a lint violation, a failing test, or a
-broken production build in *any* of the three packages fails CI. There is no
-separate deployment stage in this pipeline — contract deployment is a manual,
-explicit step (`npm run setup`) documented in ["Smart Contracts"](#smart-contracts),
-not something CI performs automatically.
+broken production build in *any* job fails CI, and PR checks show exactly
+which package broke rather than one opaque "build-and-test" status. There is
+no separate deployment stage in this pipeline — contract deployment is a
+manual, explicit step (`npm run setup`) documented in
+["Smart Contracts"](#smart-contracts), not something CI performs
+automatically.
 
 ## Security
 
