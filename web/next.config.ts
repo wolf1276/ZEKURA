@@ -2,6 +2,16 @@ import path from "node:path";
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // The compiled exchange contract lives one level up (see turbopack.root
+  // below); the production file tracer otherwise stops at this directory
+  // and won't bundle it into the deployed serverless function.
+  outputFileTracingRoot: path.join(__dirname, ".."),
+  outputFileTracingIncludes: {
+    // The /zk/exchange/[...path] route reads keys/zkir/contract files from
+    // contracts/managed/exchange at request time via fs.readFile, which the
+    // tracer can't discover statically (see src/app/zk/exchange/[...path]/route.ts).
+    "/zk/exchange/[...path]": ["../contracts/managed/exchange/**/*"],
+  },
   turbopack: {
     // The exchange contract's already-compiled output
     // (contracts/managed/exchange/) lives one level up from this app, and
