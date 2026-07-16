@@ -24,7 +24,7 @@ export type NetworkId = "preview" | "preprod";
 
 export const NETWORK_IDS: readonly NetworkId[] = ["preview", "preprod"] as const;
 
-export const DEFAULT_NETWORK_ID: NetworkId = "preview";
+export const DEFAULT_NETWORK_ID: NetworkId = "preprod";
 
 export interface FaucetInfo {
   available: boolean;

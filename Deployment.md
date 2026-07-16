@@ -12,8 +12,8 @@ deployed contract build.
 
 | Network | Contract Address | Deployer | Deployed | Verified |
 |---|---|---|---|---|
-| **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` | `mn_addr_preview133whwmeuxs6zs5r0n6ad2sse6q076mk8lggq3y7pl8h4vsywp7zqgwjzmf` | 2026-07-15 | ✅ 2026-07-16 (`npm run test:e2e`) |
-| **Preprod** | `7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1` | `mn_addr_preprod1z2yz0lxr50t4ck74rka664fe66p8lu86uazqlnfuehx53wxkgfksezfxag` | 2026-07-16 | ✅ 2026-07-16 (`npm run test:e2e` + live trade round trip, see below) |
+| **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` | `mn_addr_preview133whwmeuxs6zs5r0n6ad2sse6q076mk8lggq3y7pl8h4vsywp7zqgwjzmf` | 2026-07-15 | ✅ 2026-07-16 (`npm run test:e2e`, re-confirmed in the Level 4 pass below) |
+| **Preprod** | `7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1` | `mn_addr_preprod1z2yz0lxr50t4ck74rka664fe66p8lu86uazqlnfuehx53wxkgfksezfxag` | 2026-07-16 | ✅ 2026-07-16 (`npm run test:e2e` + two independent live trade round trips, see below — this is also the frontend's default network as of the Level 4 pass) |
 | Undeployed (local devnet) | not persistent — redeploy via `npm run setup` | genesis seed | — | n/a |
 
 Both Preview and Preprod run the **same contract build** — the post-audit
@@ -246,3 +246,108 @@ earlier today" is not the same claim as "is live now":
   wallet session available to it — only headless, extension-free
   navigation and direct SDK/API calls, which is what all of the checks
   above (and the Level 2 entry's live trade) actually are.
+
+---
+
+## Post-deployment re-verification — 2026-07-16 (Level 4 pass)
+
+Independent re-check performed as part of a Level 4 production-readiness
+pass, a separate session from the Level 2/3 entries above. No redeployment —
+`contracts/exchange.compact` is unchanged since commit `fec758e` (`git diff
+fec758e HEAD -- contracts/exchange.compact` is empty), and the same compiler
+toolchain (`compact 0.5.1`, compiler `0.31.1`, language `0.23.0`, runtime
+`0.16.0`, matching `contracts/managed/exchange/compiler/contract-info.json`)
+was confirmed still installed, so the live Preprod/Preview bytecode still
+matches source — this pass re-verified that claim rather than assuming it.
+
+**CI fix (real, pre-existing bug found and fixed this pass):** the `main`
+branch's most recent CI run (`bc13614`, "feat(level3): ...") had been
+**failing** — `web`'s `npm run typecheck` errored on `RouteContext` (a
+Next.js 15.5+/16 typed-routes global type generated into `.next/types/` by
+`next build`/`next dev`, but CI runs `typecheck` *before* `build`, so a fresh
+checkout has no `.next/types` yet). Fixed by changing `web/package.json`'s
+`typecheck` script to `next typegen && tsc --noEmit` (`next typegen` is the
+documented fix for exactly this — see
+`node_modules/next/dist/docs/01-app/02-guides/upgrading/version-16.md`).
+Verified locally from a clean `.next/types` removal that this resolves it;
+this closes the CI/CD Level 4 requirement ("runs build, typecheck, lint, and
+tests on every push and PR") for real rather than only on paper.
+
+**Fresh full verification, this session, independent of prior sessions'
+records:**
+
+- Root: `npm run compile` (5 circuits, exit 0), `npm run build` (0 errors),
+  `npm run test` (34/34).
+- Matcher: `npm run typecheck` (0 errors), `npm run lint` (0 errors), `npm
+  test` (185/185, 25 test files).
+- Web: `npm run typecheck` (0 errors, post-fix), `npm run lint` (0 errors),
+  `npm run test` (19/19), `npm run build` (production build, all 14 routes).
+- Direct GraphQL query to `indexer.preprod.midnight.network` for
+  `7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1` →
+  `{"__typename":"ContractCall"}`, confirming live on-chain state right now.
+- `npm run test:e2e -- --network preprod` and `-- --network preview` — both
+  ✅, both addresses unchanged from the tables above.
+
+**Frontend now defaults to Preprod, not Preview** (a Level 4 requirement:
+"point the frontend to the Preprod deployment"): `DEFAULT_NETWORK_ID` in
+`web/src/network/networkConfig.ts` changed from `"preview"` to `"preprod"` —
+this is the one place that constant is defined, consumed by
+`NetworkProvider.tsx` for both the SDK's global network id and the
+pre-wallet-connect React state. Verified with a headless Chromium pass
+(`next dev`, fresh browser context, no localStorage/no wallet) against
+`/`, `/dashboard`, `/trade`, `/orders`, `/activity`: every route's navbar
+network badge reads **"Preprod"**, zero console errors. Screenshots from
+this pass are in `docs/screenshots/` and referenced from the README.
+
+**Fresh live trade round trip on Preprod, this session** (not a rerun of the
+Level 2 entry's trade — new orders, new tx ids, exercised against the
+already-running live Matcher instance for this repo):
+
+1. Generated a self-consistent BUY (price 1000) / SELL (price 900) order
+   pair, same asset, equal amount (50), distinct owner identities — using
+   the compiled contract's own exported `pureCircuits.deriveOwnerId` (not a
+   hand-rolled reimplementation) plus the same `persistentCommit`-based
+   commitment encoding `matcher/src/utils/orderDetailsCodec.ts` uses.
+2. Submitted both orders' `createOrder(orderId, commitment)` directly
+   on-chain against Preprod using the funded deployer wallet — both
+   confirmed with real tx ids
+   (`007dd999f3321d653db16979151e254ac614a84c852a8298d2c2b122213877ecd0` for
+   BUY,
+   `00ddf2bc367834b7c8c62a8f11955dee536b163ecbd1104548665831232f249de3` for
+   SELL).
+3. `POST /orders` for the BUY to the live Matcher (already running against
+   this Preprod deployment) → `201`, `OPEN`, no match yet (empty order book
+   confirmed via `GET /orderbook` beforehand).
+4. `POST /orders` for the SELL → `201`, immediate match returned in the same
+   response (price 900, amount 50, price-time-priority engine).
+5. `SettlementService` automatically submitted `settle()` on-chain; polling
+   `GET /orders/:id` showed both orders `FILLED` within seconds.
+6. **Verified independently, bypassing the Matcher**: a direct
+   `publicDataProvider.queryContractState` + `Exchange.ledger(...)` read
+   against the live Preprod indexer showed both orders `state=FILLED` with
+   the exact commitments submitted.
+7. `GET /trades` and `GET /stats` for the traded asset both reflected the
+   fill (`lastPrice: "900"`, `volumeBase: "50"`, `tradeCount: 1`) — these are
+   the exact endpoints the web app's Activity/Overview pages consume.
+8. Failure-path checks against the same live Matcher/Preprod state, all
+   rejected correctly: resubmitting the already-filled BUY order → `409
+   DUPLICATE`; a self-inconsistent forged commitment/blinding pair → `422
+   SIGNATURE_INVALID`; a well-formed, self-consistent order never
+   registered on-chain → `422 NOT_ON_CHAIN`.
+
+This is a second, independent full exercise of wallet → trade → Matcher →
+settlement → UI-consumed-endpoints on live Preprod infrastructure, in
+addition to the Level 2 entry's trade — the same conclusion holds: every
+stage passes except a literal browser + wallet-extension click-through,
+which remains blocked by the lack of a wallet extension / human operator in
+this automated environment (unchanged from every prior entry in this file).
+
+**Repository prepared for public release this pass:** added `LICENSE` (MIT,
+matching `package.json`'s declared license — previously missing, so GitHub
+reported `licenseInfo: null` despite the repo already being public), and set
+the GitHub repo topics to include `midnightntwrk` (required for Midnight
+ecosystem tracking per `docs.midnight.network/blog/get-your-project-on-the-map`)
+alongside `compact`, `zero-knowledge`, `privacy`, `blockchain`. Confirmed via
+`git log --all --diff-filter=A` that no wallet seed, `.env`, or state file
+has ever been committed to this repository's history (not just currently
+gitignored).

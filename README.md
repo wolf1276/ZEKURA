@@ -316,9 +316,11 @@ wallet injected under `window.midnight` is picked up generically:
   `unsupported-network` for a wallet-reported id Zekura has no
   `NetworkConfig` for (i.e. anything other than `preview`/`preprod`).
 
-## Preview
+## Preprod
 
-Preview is the default network the web app runs against. To run against it:
+**Preprod is the default network the web app runs against**
+(`DEFAULT_NETWORK_ID` in `web/src/network/networkConfig.ts`) — this is the
+primary deployment target for this repo. To run against it:
 
 ```bash
 cd web
@@ -327,16 +329,20 @@ npm install
 npm run dev
 ```
 
-`NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREVIEW` in `web/.env.local` must
-point at a live Preview deployment (see the Contract Address table above).
-Point your wallet extension at Preview and connect — the app adopts
+`NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREPROD` in `web/.env.local` must
+point at a live Preprod deployment (see the Contract Address table above —
+currently `7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1`).
+Point your wallet extension at Preprod and connect — the app adopts
 whatever network the wallet reports (see "Wallet" above), it isn't chosen
-by an env var at runtime.
+by an env var at runtime; the env var only supplies this app's own contract
+address on that network. For read-only sanity checks against Preprod
+without a browser at all, use `npm run test:e2e -- --network preprod` from
+the repo root (see Deployment.md).
 
-## Preprod
+## Preview
 
-Same app, pointed at Preprod instead — switch networks from the wallet
-picker/Network Manager in the navbar, or start fresh against Preprod
+Same app, pointed at Preview instead — switch networks from the wallet
+picker/Network Manager in the navbar, or start fresh against Preview
 directly:
 
 ```bash
@@ -344,13 +350,9 @@ cd web
 npm run dev
 ```
 
-`NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREPROD` in `web/.env.local` must
-point at a live Preprod deployment (see the Contract Address table above —
-currently `7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1`).
-Switch your wallet extension to Preprod; the app follows. For read-only
-sanity checks against Preprod without a browser at all, use
-`npm run test:e2e -- --network preprod` from the repo root (see
-Deployment.md).
+`NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREVIEW` in `web/.env.local` must
+point at a live Preview deployment (see the Contract Address table above).
+Switch your wallet extension to Preview; the app follows.
 
 ## Demo Instructions
 
@@ -391,17 +393,17 @@ The full flow — **wallet → trade → Matcher → settlement → UI updates**
 has been exercised at two different levels, and this section reports both
 honestly rather than overstating either:
 
-- **Fully verified, live, on real Preprod infrastructure** (see
-  [Deployment.md](./Deployment.md) for the complete transcript): two
-  on-chain `createOrder()` calls submitted directly, both accepted by the
-  live Matcher (which independently recomputed and cross-checked each
-  commitment against the indexer), matched by the price-time-priority
-  engine, settled with a real on-chain `settle()` transaction, and the
-  resulting `FILLED` state confirmed by an independent direct ledger read
-  (not just trusting the Matcher's own database). Three live failure-path
-  checks (forged commitment, unregistered order, replay of an
-  already-filled order) were also exercised and rejected correctly. The
-  Matcher's `GET /trades`/`GET /stats` endpoints — what the web app's
+- **Fully verified, live, on real Preprod infrastructure — twice,
+  independently, in separate sessions** (see [Deployment.md](./Deployment.md)
+  for both complete transcripts): on-chain `createOrder()` calls submitted
+  directly, accepted by the live Matcher (which independently recomputed and
+  cross-checked each commitment against the indexer), matched by the
+  price-time-priority engine, settled with a real on-chain `settle()`
+  transaction, and the resulting `FILLED` state confirmed by an independent
+  direct ledger read (not just trusting the Matcher's own database). Live
+  failure-path checks (forged commitment, unregistered order, replay of an
+  already-filled order) were exercised and rejected correctly both times.
+  The Matcher's `GET /trades`/`GET /stats` endpoints — what the web app's
   Activity and Overview pages consume — were confirmed to reflect the fill.
 - **Not yet exercised**: a literal browser session with a real wallet
   extension (1AM/Lace) driving a click-through of the Demo Instructions
@@ -480,6 +482,33 @@ from one sealed round to a continuously operating order book."**
 
 ## Screenshots
 
-_(placeholder — see the "Demo Instructions" above to run the app locally and
-capture your own; a live UI walkthrough requires a wallet extension, which
-this repo's automated verification cannot provide)_
+Captured from a real `next dev` build running against live Preprod (headless
+Chromium, no wallet connected — the pre-connect / empty state every visitor
+sees first). See "Demo Instructions" above to drive a full connected-wallet
+session yourself; that part still requires a human with a wallet extension,
+which this repo's automated verification cannot provide.
+
+**Landing**
+![Landing page](./docs/screenshots/landing.png)
+
+**Dashboard**
+![Dashboard](./docs/screenshots/dashboard.png)
+
+**Trade**
+![Trade page](./docs/screenshots/trade.png)
+
+**My Orders**
+![My Orders](./docs/screenshots/orders.png)
+
+**Activity**
+![Activity feed](./docs/screenshots/activity.png)
+
+Note the "Preprod" badge in the navbar on every page above, confirming the
+app's default network.
+
+## Product X Profile
+
+_(placeholder — no X/Twitter account exists for this project yet. The
+landing page's nav/footer "X" links (`web/src/components/launch/launch-page.tsx`)
+are themselves placeholders (`href="#"`) for the same reason. Replace this
+section with the real handle/profile URL once one exists.)_
