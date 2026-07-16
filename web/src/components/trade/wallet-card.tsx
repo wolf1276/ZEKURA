@@ -15,7 +15,7 @@ export function WalletCard({ symbol, balance, onMax }: WalletCardProps) {
       <span className="flex items-center gap-1.5 text-muted-foreground">
         <Wallet className="size-3.5" />
         Available
-        <span className="font-mono tabular-nums text-foreground/80">
+        <span className="balance-value font-mono tabular-nums text-foreground/80">
           {formatAmount(balance)} {symbol}
         </span>
       </span>

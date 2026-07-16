@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect } from "react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { PageShell, Card } from "@/components/layout/page-shell";
 import { useWallet } from "@/wallet/walletHooks";
 import { truncateAddress } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { useSettings, applyDataAttributes } from "@/hooks/use-settings";
 
 const NAV = [
   "Wallet",
@@ -64,23 +65,21 @@ function Row({
   );
 }
 
-function Toggle({ id }: { id: string }) {
-  const [on, setOn] = useState(true);
+function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <button
       role="switch"
-      aria-checked={on}
-      aria-label={id}
-      onClick={() => setOn((v) => !v)}
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
       className={cn(
         "relative h-5 w-9 rounded-full transition-colors",
-        on ? "bg-primary" : "bg-border",
+        checked ? "bg-primary" : "bg-border",
       )}
     >
       <span
         className={cn(
           "absolute top-0.5 size-4 rounded-full bg-white transition-transform",
-          on ? "translate-x-4" : "translate-x-0.5",
+          checked ? "translate-x-4" : "translate-x-0.5",
         )}
       />
     </button>
@@ -91,16 +90,25 @@ function Btn({
   children,
   onClick,
   destructive,
+  disabled,
+  title,
 }: {
   children: React.ReactNode;
   onClick: () => void;
   destructive?: boolean;
+  disabled?: boolean;
+  title?: string;
 }) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
+      title={title}
       className={cn(
-        "rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:border-border-hover",
+        "rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors",
+        disabled
+          ? "cursor-not-allowed border-destructive/30 text-destructive/60"
+          : "hover:border-border-hover",
         destructive ? "text-destructive hover:border-destructive/50" : "text-foreground/90",
       )}
     >
@@ -118,18 +126,140 @@ function ReadOnly({ children }: { children: React.ReactNode }) {
 export function SettingsPage() {
   const { status, wallet, openModal, disconnect } = useWallet();
   const { theme, setTheme } = useTheme();
+  const {
+    autoConnect, setAutoConnect,
+    compactMode, setCompactMode,
+    reduceMotion, setReduceMotion,
+    notifyFilled, setNotifyFilled,
+    notifySettled, setNotifySettled,
+    notifyErrors, setNotifyErrors,
+    notifyBrowser, setNotifyBrowser,
+    hidePortfolio, setHidePortfolio,
+    hideBalances, setHideBalances,
+    privacyMode, setPrivacyMode,
+  } = useSettings();
+
+  const unsupportedNetwork = status === "unsupported-network";
   const explorer = EXPLORER_URL[wallet?.networkId ?? "preprod"] ?? EXPLORER_URL.preprod;
   const open = (url: string) => window.open(url, "_blank", "noopener,noreferrer");
 
-  function copyDebug() {
-    void navigator.clipboard.writeText(
-      JSON.stringify(
-        { wallet: wallet?.walletName, network: wallet?.networkId, status },
-        null,
-        2,
-      ),
-    );
-    toast.success("Debug info copied");
+  useEffect(() => {
+    applyDataAttributes();
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.compact = compactMode ? "" : undefined;
+  }, [compactMode]);
+
+  useEffect(() => {
+    document.documentElement.dataset.reduceMotion = reduceMotion ? "" : undefined;
+  }, [reduceMotion]);
+
+  useEffect(() => {
+    document.documentElement.dataset.hideBalances = hideBalances ? "" : undefined;
+    document.documentElement.dataset.hidePortfolio = hidePortfolio ? "" : undefined;
+  }, [hideBalances, hidePortfolio]);
+
+  useEffect(() => {
+    if (!notifyBrowser) return;
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission === "granted") return;
+    if (Notification.permission === "denied") {
+      toast.error("Browser notifications are blocked. Update your browser settings to enable them.");
+      return;
+    }
+    Notification.requestPermission().then((permission) => {
+      if (permission !== "granted") {
+        setNotifyBrowser(false);
+        toast.error("Notification permission denied. Update your browser settings to allow notifications.");
+      }
+    });
+  }, [notifyBrowser, setNotifyBrowser]);
+
+  function handlePrivacyMode(v: boolean) {
+    setPrivacyMode(v);
+    if (v) {
+      setHidePortfolio(true);
+      setHideBalances(true);
+    }
+  }
+
+  function handleHidePortfolio(v: boolean) {
+    setHidePortfolio(v);
+    if (!v && !hideBalances) setPrivacyMode(false);
+  }
+
+  function handleHideBalances(v: boolean) {
+    setHideBalances(v);
+    if (!v && !hidePortfolio) setPrivacyMode(false);
+  }
+
+  async function copyAddress() {
+    if (!wallet) return;
+    try {
+      await navigator.clipboard.writeText(wallet.unshieldedAddress);
+      toast.success("Address copied");
+    } catch {
+      toast.error("Failed to copy address. Clipboard access denied.");
+    }
+  }
+
+  async function copyPublicKey() {
+    if (!wallet) return;
+    try {
+      await navigator.clipboard.writeText(wallet.shieldedCoinPublicKey);
+      toast.success("Public key copied");
+    } catch {
+      toast.error("Failed to copy public key. Clipboard access denied.");
+    }
+  }
+
+  async function copyDebug() {
+    const payload = {
+      app: { name: "Zekura", version: "v0.1.0" },
+      wallet: wallet
+        ? {
+            name: wallet.walletName,
+            networkId: wallet.networkId,
+            unshieldedAddress: wallet.unshieldedAddress,
+            shieldedAddress: wallet.shieldedAddress,
+            configuration: wallet.configuration,
+          }
+        : null,
+      network: wallet?.networkId ?? "none",
+      status,
+      settings: {
+        autoConnect,
+        compactMode,
+        reduceMotion,
+        notifyFilled,
+        notifySettled,
+        notifyErrors,
+        notifyBrowser,
+        hidePortfolio,
+        hideBalances,
+        privacyMode,
+      },
+    };
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      toast.success("Debug info copied");
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = JSON.stringify(payload, null, 2);
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+        toast.success("Debug info copied");
+      } catch {
+        toast.error("Failed to copy debug info. Copy manually from console.");
+        console.log("Debug info:", payload);
+      }
+      document.body.removeChild(ta);
+    }
   }
 
   return (
@@ -167,10 +297,33 @@ export function SettingsPage() {
                 <Btn onClick={openModal}>Connect</Btn>
               )}
             </Row>
-            <Row label="Wallet Address">
-              <ReadOnly>
+            <Row label="Wallet Address" hint={wallet ? "Click to copy" : undefined}>
+              <button
+                onClick={copyAddress}
+                disabled={!wallet}
+                className={cn(
+                  "font-mono text-xs transition-colors",
+                  wallet
+                    ? "text-muted-foreground hover:text-foreground"
+                    : "text-muted-foreground",
+                )}
+              >
                 {wallet ? truncateAddress(wallet.unshieldedAddress, 10, 6) : "—"}
-              </ReadOnly>
+              </button>
+            </Row>
+            <Row label="Public Key" hint={wallet ? "Click to copy" : undefined}>
+              <button
+                onClick={copyPublicKey}
+                disabled={!wallet}
+                className={cn(
+                  "font-mono text-xs transition-colors",
+                  wallet
+                    ? "text-muted-foreground hover:text-foreground"
+                    : "text-muted-foreground",
+                )}
+              >
+                {wallet ? truncateAddress(wallet.shieldedCoinPublicKey, 8, 6) : "—"}
+              </button>
             </Row>
             <Row label="Reconnect">
               <Btn onClick={openModal}>Reconnect</Btn>
@@ -179,7 +332,7 @@ export function SettingsPage() {
               label="Auto Connect"
               hint="Automatically reconnect on launch"
             >
-              <Toggle id="auto-connect" />
+              <Toggle checked={autoConnect} onChange={setAutoConnect} />
             </Row>
           </Section>
 
@@ -188,14 +341,36 @@ export function SettingsPage() {
             title="Network"
             subtitle="View network and infrastructure status"
           >
-            <Row label="Current Network">
+            <Row
+              label="Current Network"
+              hint={
+                unsupportedNetwork
+                  ? `Unsupported: ${wallet?.networkId ?? "unknown"}`
+                  : undefined
+              }
+            >
               <ReadOnly>{wallet?.networkId ?? "—"}</ReadOnly>
             </Row>
             <Row label="Network Status">
-              <ReadOnly>{status === "connected" ? "Operational" : "—"}</ReadOnly>
+              <ReadOnly>{status === "connected" ? "Operational" : status === "connecting" ? "Connecting..." : status === "unsupported-network" ? "Unsupported" : "—"}</ReadOnly>
             </Row>
-            <Row label="Explorer Link">
-              <Btn onClick={() => open(explorer)}>Open</Btn>
+            <Row
+              label="Explorer Link"
+              hint={
+                unsupportedNetwork
+                  ? "Cannot open explorer — wallet is on an unsupported network"
+                  : undefined
+              }
+            >
+              <Btn
+                onClick={() => {
+                  if (!unsupportedNetwork) open(explorer);
+                }}
+                disabled={unsupportedNetwork}
+                title={unsupportedNetwork ? "Current network has no explorer" : undefined}
+              >
+                Open
+              </Btn>
             </Row>
             <Row label="Proof Server Status">
               <ReadOnly>{status === "connected" ? "Online" : "—"}</ReadOnly>
@@ -214,11 +389,17 @@ export function SettingsPage() {
                 <option value="light">Light</option>
               </select>
             </Row>
-            <Row label="Compact Mode">
-              <Toggle id="compact" />
+            <Row
+              label="Compact Mode"
+              hint="Reduce spacing throughout the app"
+            >
+              <Toggle checked={compactMode} onChange={setCompactMode} />
             </Row>
-            <Row label="Reduce Motion">
-              <Toggle id="reduce-motion" />
+            <Row
+              label="Reduce Motion"
+              hint="Disable animations and transitions"
+            >
+              <Toggle checked={reduceMotion} onChange={setReduceMotion} />
             </Row>
           </Section>
 
@@ -228,16 +409,27 @@ export function SettingsPage() {
             subtitle="Choose what you get notified about"
           >
             <Row label="Order Filled">
-              <Toggle id="notify-filled" />
+              <Toggle checked={notifyFilled} onChange={setNotifyFilled} />
             </Row>
             <Row label="Settlement Complete">
-              <Toggle id="notify-settled" />
+              <Toggle checked={notifySettled} onChange={setNotifySettled} />
             </Row>
             <Row label="Errors">
-              <Toggle id="notify-errors" />
+              <Toggle checked={notifyErrors} onChange={setNotifyErrors} />
             </Row>
-            <Row label="Browser Notifications">
-              <Toggle id="notify-browser" />
+            <Row
+              label="Browser Notifications"
+              hint={
+                typeof Notification !== "undefined" && Notification.permission === "denied"
+                  ? "Blocked by browser — update site settings to enable"
+                  : "Send push notifications for order events"
+              }
+            >
+              {typeof Notification === "undefined" ? (
+                <ReadOnly>Unsupported</ReadOnly>
+              ) : (
+                <Toggle checked={notifyBrowser} onChange={setNotifyBrowser} />
+              )}
             </Row>
           </Section>
 
@@ -246,14 +438,23 @@ export function SettingsPage() {
             title="Privacy"
             subtitle="Control what is visible on screen"
           >
-            <Row label="Hide Portfolio">
-              <Toggle id="hide-portfolio" />
+            <Row
+              label="Hide Portfolio"
+              hint="Hide portfolio values on dashboard"
+            >
+              <Toggle checked={hidePortfolio} onChange={handleHidePortfolio} />
             </Row>
-            <Row label="Hide Balances">
-              <Toggle id="hide-balances" />
+            <Row
+              label="Hide Balances"
+              hint="Hide balance values across the app"
+            >
+              <Toggle checked={hideBalances} onChange={handleHideBalances} />
             </Row>
-            <Row label="Privacy Mode">
-              <Toggle id="privacy-mode" />
+            <Row
+              label="Privacy Mode"
+              hint="Toggle all privacy settings at once"
+            >
+              <Toggle checked={privacyMode} onChange={handlePrivacyMode} />
             </Row>
           </Section>
 
@@ -265,7 +466,16 @@ export function SettingsPage() {
             <Row label="SDK Version">
               <ReadOnly>@midnight-ntwrk 4.0.4</ReadOnly>
             </Row>
-            <Row label="Network Manager Status">
+            <Row label="Contract Address">
+              <ReadOnly>{wallet?.configuration?.networkId === "preview" ? "N/A — Preview TBD" : wallet?.configuration?.networkId === "preprod" ? "N/A — Preprod TBD" : "—"}</ReadOnly>
+            </Row>
+            <Row label="Matcher Status">
+              <ReadOnly>{status === "connected" ? "Available" : "—"}</ReadOnly>
+            </Row>
+            <Row label="API Status">
+              <ReadOnly>{status === "connected" ? "Operational" : "—"}</ReadOnly>
+            </Row>
+            <Row label="Network Status">
               <ReadOnly>{status === "connected" ? "Running" : "Idle"}</ReadOnly>
             </Row>
             <Row label="Copy Debug Information">
@@ -281,11 +491,20 @@ export function SettingsPage() {
             <Row label="Application Version">
               <ReadOnly>v0.1.0</ReadOnly>
             </Row>
+            <Row label="GitHub">
+              <Btn onClick={() => open("https://github.com/anomalyco/zekura")}>Open</Btn>
+            </Row>
             <Row label="Documentation">
               <Btn onClick={() => open("https://docs.midnight.network/")}>Open</Btn>
             </Row>
-            <Row label="Support">
-              <Btn onClick={() => open("https://docs.midnight.network/")}>Open</Btn>
+            <Row label="Whitepaper">
+              <Btn onClick={() => open("https://docs.midnight.network/learn/tokenomics/whitepaper")}>Open</Btn>
+            </Row>
+            <Row label="X">
+              <Btn onClick={() => open("https://x.com/MidnightNtwrk")}>Open</Btn>
+            </Row>
+            <Row label="License">
+              <Btn onClick={() => open("https://github.com/anomalyco/zekura/blob/main/LICENSE")}>Open</Btn>
             </Row>
           </Section>
         </div>

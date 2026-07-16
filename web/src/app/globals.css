@@ -179,3 +179,30 @@
     display: none;
   }
 }
+
+[data-compact] {
+  --compact-gap: 0.25rem;
+  --compact-padding: 0.375rem;
+}
+[data-compact] .gap-4 { gap: var(--compact-gap, 0.25rem); }
+[data-compact] .p-4 { padding: var(--compact-padding, 0.375rem); }
+[data-compact] .p-5 { padding: calc(var(--compact-padding, 0.375rem) + 0.125rem); }
+[data-compact] .px-5 { padding-left: calc(var(--compact-padding, 0.375rem) + 0.125rem); padding-right: calc(var(--compact-padding, 0.375rem) + 0.125rem); }
+[data-compact] .py-4 { padding-top: var(--compact-gap, 0.25rem); padding-bottom: var(--compact-gap, 0.25rem); }
+[data-compact] .mb-10 { margin-bottom: 1.25rem; }
+[data-compact] .py-8 { padding-top: 1rem; padding-bottom: 1rem; }
+
+[data-reduce-motion] *,
+[data-reduce-motion] *::before,
+[data-reduce-motion] *::after {
+  animation-duration: 0s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0s !important;
+}
+
+[data-hide-balances] .balance-value,
+[data-hide-portfolio] .portfolio-value {
+  filter: blur(8px);
+  user-select: none;
+  cursor: default;
+}

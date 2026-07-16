@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { NetworkProvider } from "@/network/NetworkProvider";
 import { WalletProvider } from "@/wallet/WalletProvider";
 import { WalletModal } from "@/wallet/WalletModal";
+import { WebNotificationEffect } from "@/components/settings/web-notification-effect";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -40,6 +41,7 @@ export default function RootLayout({
               {children}
               <WalletModal />
               <Toaster theme="dark" position="bottom-right" />
+              <WebNotificationEffect />
             </TooltipProvider>
           </WalletProvider>
         </NetworkProvider>

@@ -19,6 +19,7 @@ import { WalletError, type ConnectedWalletInfo, type PickerWallet, type WalletSt
 import { useNetworkContext } from "@/network/networkContext";
 import { isNetworkId, type NetworkId } from "@/network/networkConfig";
 import { NoWalletConnectedError, emitWalletNetworkChanged, setWalletNetworkBridge } from "@/network/networkBridge";
+import { readSetting } from "@/hooks/use-settings";
 
 const RECONNECT_STORAGE_KEY = "zekura:wallet-was-connected";
 const LAST_WALLET_ID_KEY = "zekura:last-wallet-id";
@@ -286,7 +287,9 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
           setWallet(info);
           setStatus(statusForWallet(info));
           setConnectingWalletId(null);
-          window.localStorage.setItem(RECONNECT_STORAGE_KEY, "1");
+          if (readSetting("autoConnect")) {
+            window.localStorage.setItem(RECONNECT_STORAGE_KEY, "1");
+          }
           window.localStorage.setItem(LAST_WALLET_ID_KEY, id);
           startPolling();
           reportWalletNetworkId(info.networkId);
@@ -324,6 +327,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   // picker — it never surfaces this as an error.
   useEffect(() => {
     if (!networkReady) return;
+    if (!readSetting("autoConnect")) return;
     const wasConnected = window.localStorage.getItem(RECONNECT_STORAGE_KEY) === "1";
     if (!wasConnected) return;
     const lastWalletId = window.localStorage.getItem(LAST_WALLET_ID_KEY);
