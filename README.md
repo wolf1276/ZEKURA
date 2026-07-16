@@ -125,7 +125,8 @@ doesn't exist. What *is* live today:
 | Preprod contract (Midnight testnet, default network) | [`7d1f1f67…7eb9d1`](https://preprod.midnightexplorer.com/) on [Preprod explorer](https://preprod.midnightexplorer.com/) |
 | Security audit | [`AUDIT.md`](./AUDIT.md) |
 | Deployment & live-verification record | [`Deployment.md`](./Deployment.md) |
-| Whitepaper / X (Twitter) / hosted app | Not published yet — see ["Roadmap"](#roadmap) |
+| X (Twitter) | [@zekuraprotcol](https://x.com/zekuraprotcol) |
+| Whitepaper / hosted app | Not published yet — see ["Roadmap"](#roadmap) |
 
 To run the full stack yourself against either live testnet, see
 ["Getting Started"](#getting-started) and ["Wallet Setup"](#wallet-setup).

@@ -419,7 +419,7 @@ export function LaunchPage() {
             <div key={col.h} className="flex flex-col gap-2.5">
               <p className={cn("mb-1 text-[11px] uppercase tracking-[0.14em]", MUTED)}>{col.h}</p>
               {col.links.map((l) => (
-                <a key={l} href="#" className={cn("text-[13px] transition-colors duration-150 hover:text-[var(--k-text-primary)]", "text-[var(--k-text-secondary)]")}>{l}</a>
+                <a key={l} href={l === "X" ? "https://x.com/zekuraprotcol" : "#"} className={cn("text-[13px] transition-colors duration-150 hover:text-[var(--k-text-primary)]", "text-[var(--k-text-secondary)]")}>{l}</a>
               ))}
             </div>
           ))}

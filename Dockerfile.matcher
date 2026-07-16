@@ -1,0 +1,65 @@
+# syntax=docker/dockerfile:1
+# Builds the Zekura Matcher (matcher/) for a long-running host (Railway) —
+# it needs a persistent volume + always-on process, unlike the Vercel-hosted
+# web app. Build context is the repo root: the Matcher imports the root's
+# src/wallet.ts / src/network.ts directly (see matcher/README.md) and needs
+# contracts/managed/exchange compiled from contracts/exchange.compact, same
+# as web/scripts/vercel-build.sh does for the web app.
+FROM node:22-bookworm-slim AS build
+WORKDIR /app
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates xz-utils unzip python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/root/.local/bin:${PATH}"
+RUN curl --proto '=https' --tlsv1.2 -LsSf https://github.com/midnightntwrk/compact/releases/latest/download/compact-installer.sh | sh \
+  && compact update 0.31.1
+
+COPY package.json package-lock.json ./
+COPY matcher/package.json matcher/package.json
+RUN npm ci
+
+COPY contracts/exchange.compact contracts/exchange.compact
+RUN compact compile contracts/exchange.compact contracts/managed/exchange
+
+COPY src ./src
+COPY matcher ./matcher
+RUN cd matcher && npx tsc -p tsconfig.json
+
+# Public contract address only (see Deployment.md) — no wallet seeds. The
+# Matcher's own operator seed comes from the MATCHER_WALLET_SEED env var,
+# which bypasses the getOrCreateSeed() fallback that would otherwise read
+# wallets.* from this file.
+RUN cat > .midnight-state.json <<'EOF'
+{
+  "version": 1,
+  "activeNetwork": "preprod",
+  "wallets": {},
+  "deployments": {
+    "preprod": {
+      "address": "7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1",
+      "deployedAt": "2026-07-16T00:00:00.000Z",
+      "deployer": "unknown"
+    }
+  }
+}
+EOF
+
+FROM node:22-bookworm-slim
+WORKDIR /app
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/matcher/node_modules ./matcher/node_modules
+COPY --from=build /app/contracts/exchange.compact ./contracts/exchange.compact
+COPY --from=build /app/contracts/managed ./contracts/managed
+COPY --from=build /app/matcher/dist ./matcher/dist
+COPY --from=build /app/.midnight-state.json ./.midnight-state.json
+COPY scripts/matcher-docker-entrypoint.sh ./scripts/matcher-docker-entrypoint.sh
+
+ENV NODE_ENV=production
+EXPOSE 4000
+ENTRYPOINT ["./scripts/matcher-docker-entrypoint.sh"]

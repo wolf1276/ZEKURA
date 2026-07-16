@@ -1,0 +1,15 @@
+node_modules
+**/node_modules
+.git
+web
+docs/screenshots
+contracts/managed
+matcher/dist
+matcher/data
+midnight-level-db
+.midnight-wallet-state
+.midnight-state.json
+.vercel
+.env
+.env.*
+*.log
