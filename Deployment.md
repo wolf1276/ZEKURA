@@ -159,3 +159,55 @@ deployment.
 See the top-level deliverables summary (Deployment report / E2E verification
 report / Remaining issues / Production readiness score) delivered alongside
 this document for the full assessment.
+
+---
+
+## Post-deployment re-verification — 2026-07-16 (Level 2 pass)
+
+No redeployment occurred in this pass — `git diff` against the commit that
+produced the deployment above shows `contracts/exchange.compact` unchanged
+except a trailing-whitespace edit inside a comment, so the live bytecode on
+both networks still matches source. This entry records an independent
+re-check of that claim plus a full verification run, rather than trusting
+the record above at face value:
+
+- **Live indexer query, independent of this repo's own tooling**: a direct
+  GraphQL `contractAction(address: ...)` request to
+  `indexer.preprod.midnight.network` for
+  `7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1`
+  returned a real `ContractCall`, confirming the address is live on-chain
+  right now, not just recorded in this file.
+- `npm run compile` — 5 circuits, exit 0.
+- `npm run build` (root `tsc --noEmit`) — 0 errors.
+- `npm run test` (root) — 34/34 passed.
+- `matcher`: `npm run typecheck` — 0 errors; `npm run lint` — 0 errors;
+  `npm test` — 185/185 passed.
+- `web`: `npm run typecheck` — 0 errors; `npm run lint` — 0 errors;
+  `npm run build` (real Next.js production build, Turbopack) — succeeded,
+  all 14 routes compiled including the new privacy-proof panel on `/trade`.
+- `npm run test:e2e -- --network preprod` — passed (reconnected via
+  `findDeployedContract`, read live ledger state).
+- `npm run test:e2e -- --network preview` — passed (Preview independently
+  re-confirmed untouched and still healthy).
+
+**Frontend change made in this pass**: the Trade page's "Privacy Status"
+indicator (`market-insights.tsx`) was a static badge, not an observable
+demonstration. Added `web/src/services/midnight/orderVerification.ts` (a
+read-only `queryContractState` + `Exchange.ledger` lookup — the same
+pattern this file already uses in `matcher/src/index.ts` and `src/cli.ts`)
+and a `PrivacyProofPanel` component that, after a real order submission,
+fetches that order's actual live ledger record and displays it next to the
+order's real private fields, so the public/private split documented in
+this repo's Privacy Model is something a user can click and observe rather
+than only read about. Verified by production build (compiles cleanly into
+the `/trade` route) and a headless-browser render pass (Playwright,
+`/trade`/`/orders`/`/activity`/`/dashboard`, zero console errors) — the
+panel's populated ("found") state was verified by code review only, not a
+live screenshot, since exercising it end-to-end requires a connected
+wallet extension with funds, which this automated pass cannot provide (see
+"Not yet exercised" below, unchanged from the prior entry).
+
+**Not yet exercised** (unchanged from the entry above): a real browser +
+wallet-extension-driven trade through the actual `web/` UI, including a
+literal wallet connect/disconnect/reconnect click-through. This remains a
+human-in-the-loop step.
