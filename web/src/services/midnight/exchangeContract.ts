@@ -140,8 +140,15 @@ async function buildContractProviders(
   shielded: ConnectedWalletShieldedKeys,
   proofServerUri: string,
 ): Promise<MidnightProviders<"createOrder", PrivateStateId, unknown>> {
+  // FetchZkConfigProvider defaults its fetchFunc to cross-fetch's browser
+  // export, which — when native fetch exists — is just the unbound
+  // `window.fetch` reference. The provider then calls it as
+  // `this.fetchFunc(...)`, a method call that rebinds `this` away from
+  // Window and trips fetch's native "Illegal invocation" guard. Passing an
+  // explicitly bound fetch sidesteps the bug entirely.
   const zkConfigProvider = new FetchZkConfigProvider<"createOrder">(
     `${window.location.origin}/zk/exchange`,
+    window.fetch.bind(window),
   );
 
   // Lace does not implement getProvingProvider() (confirmed via the
