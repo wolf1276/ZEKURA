@@ -26,7 +26,6 @@
   },
   "dependencies": {
     "@midnight-ntwrk/compact-js": "2.5.0",
-    "rxjs": "^7.8.2",
     "@midnight-ntwrk/compact-runtime": "0.16.0",
     "@midnight-ntwrk/ledger-v8": "^8.1.0",
     "@midnight-ntwrk/midnight-js-contracts": "4.0.4",
@@ -44,6 +43,10 @@
     "@midnightntwrk/wallet-sdk-hd": "^3.0.3",
     "@midnightntwrk/wallet-sdk-shielded": "^3.0.2",
     "@midnightntwrk/wallet-sdk-unshielded-wallet": "^3.1.0",
+    "clsx": "^2.1.1",
+    "motion": "^12.42.2",
+    "rxjs": "^7.8.2",
+    "tailwind-merge": "^3.6.0",
     "ws": "^8.20.0"
   },
   "devDependencies": {
@@ -55,5 +58,10 @@
   "engines": {
     "node": ">=22.0.0"
   },
-  "keywords": ["midnight", "blockchain", "zero-knowledge", "privacy"]
+  "keywords": [
+    "midnight",
+    "blockchain",
+    "zero-knowledge",
+    "privacy"
+  ]
 }

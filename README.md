@@ -9,8 +9,10 @@ This is **Level 1** of the Midnight Builder Challenge: the on-chain order regist
 | Network     | Contract Address | Deployed |
 |-------------|-------------------|----------|
 | Preview     | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` (post-audit build, see [AUDIT.md](./AUDIT.md)) | 2026-07-15 |
-| Preprod     | not deployed | — |
+| Preprod     | `7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1` (post-audit build, see [AUDIT.md](./AUDIT.md)) | 2026-07-16 |
 | Undeployed (local devnet) | redeploy locally via `npm run setup` | — |
+
+See [Deployment.md](./Deployment.md) for the full deployment record (deployer addresses, verification steps run, and current production status) for both networks.
 
 > The address above reflects the `cancelOrder` authorization-bypass fix in
 > [AUDIT.md](./AUDIT.md) (the fix changed `cancelOrder`'s circuit logic and

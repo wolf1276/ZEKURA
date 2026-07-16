@@ -424,3 +424,43 @@ $ npm run build        # tsc --noEmit
 $ npm run test
 34/34 passed
 ```
+
+---
+
+## Post-Audit Addendum — 2026-07-16: Preprod deployment and live verification
+
+This addendum records that **Remaining Risk #3** above ("No live-network
+deployment or proof-server round trip was exercised as part of this audit")
+has since been closed. It does not change any finding, fix, or score above —
+those remain the record of the 2026-07-15 audit as performed. See
+[Deployment.md](./Deployment.md) for the full deployment record.
+
+Since this audit, the same audited contract build was deployed to **Preprod**
+(`7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1`,
+2026-07-16), joining the existing Preview deployment on identical bytecode.
+Both networks were then exercised with a real, funded wallet against live
+infrastructure (proof server, indexer, node) rather than solely the offline
+`compact-runtime` harness this audit used:
+
+- A full trade round trip — two on-chain `createOrder()` calls, live Matcher
+  commitment verification against the indexer, price-time-priority matching,
+  and an on-chain `settle()` — completed on Preprod, with the resulting
+  `FILLED` state verified independently by reading the live ledger directly
+  (not merely trusting the Matcher's own database).
+- Three live failure-path checks against the same infrastructure: a forged
+  commitment (`SIGNATURE_INVALID`), an order never registered on-chain
+  (`NOT_ON_CHAIN`), and a resubmitted already-filled order (`DUPLICATE`) —
+  all rejected exactly as this audit's threat model requires.
+
+**Revised Production Readiness Score: 10/10.** The one point previously held
+back is restored — a live deployment/proof-server round trip has now been
+exercised, on both public networks, including a real settlement and live
+rejection of the specific attack this audit's P0 finding was about (a party
+who knows an order's commitment but not its `ownerSecretKey`/owner identity
+cannot act as its owner — the live checks above confirm the Matcher-observable
+half of that boundary; the `cancelOrder` half was already covered by this
+audit's regression suite). The accepted, documented off-chain risks (P2-1,
+P3-1, P3-2) are unchanged and remain the responsibility of whatever
+wallet/Matcher implementation integrates with this contract going forward —
+this repo's own Matcher implementation already follows the P2-1/P3-2
+mitigations recorded above (see `matcher/ARCHITECTURE.md`'s security model).
