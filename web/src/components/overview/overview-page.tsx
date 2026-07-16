@@ -7,6 +7,7 @@ import {
   Activity,
   ArrowUpRight,
   Copy,
+  Droplets,
   ListChecks,
   Radio,
   Wallet,
@@ -16,6 +17,7 @@ import { Navbar } from "@/components/layout/navbar";
 import { Footer } from "@/components/layout/footer";
 import { OrderStatusBadge } from "@/components/trade/order-status-badge";
 import { useWallet } from "@/wallet/walletHooks";
+import { useTreasury } from "@/hooks/use-treasury";
 import { matcher } from "@/services/matcher/matcherClient";
 import { ASSET_PAIRS } from "@/lib/mock/market";
 import {
@@ -160,6 +162,7 @@ function AllocationDonut({ holdings }: { holdings: Holding[] }) {
 
 export function OverviewPage() {
   const { status, wallet, balanceFor } = useWallet();
+  const { balance: treasuryBalance } = useTreasury();
   const [orders, setOrders] = useState<Order[]>([]);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
 
@@ -244,11 +247,11 @@ export function OverviewPage() {
         </div>
 
         {/* KPIs */}
-        <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           <KpiCard
             icon={<Wallet className="size-3.5" />}
             label="Available Balance"
-            value={`${formatAmount(nightBalance)} tNIGHT`}
+            value={<span className="balance-value">{formatAmount(nightBalance)} tNIGHT</span>}
             sub={wallet ? "Unshielded · native NIGHT" : "Connect wallet"}
           />
           <KpiCard
@@ -262,6 +265,16 @@ export function OverviewPage() {
             label="Filled Orders"
             value={String(filledCount)}
             sub="Settled on-chain"
+          />
+          <KpiCard
+            icon={<Droplets className="size-3.5" />}
+            label="Protocol Liquidity"
+            value={`${formatAmount(treasuryBalance ? Number(treasuryBalance.balance) / 1e6 : 0)} tNIGHT`}
+            sub={
+              treasuryBalance && Number(treasuryBalance.balance) > 0
+                ? `${formatAmount(Number(treasuryBalance.available) / 1e6)} tNIGHT available`
+                : "Protocol liquidity has not been funded."
+            }
           />
           <KpiCard
             icon={<Radio className="size-3.5" />}
@@ -337,7 +350,7 @@ export function OverviewPage() {
                             {h.label}
                           </span>
                         </td>
-                        <td className="py-2.5 pr-4 font-mono tabular-nums text-foreground/90">
+                        <td className="balance-value py-2.5 pr-4 font-mono tabular-nums text-foreground/90">
                           {formatAmount(h.amount)}
                         </td>
                         <td className="py-2.5 pr-2 font-mono tabular-nums text-muted-foreground">

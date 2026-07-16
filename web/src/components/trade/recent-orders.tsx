@@ -31,6 +31,23 @@ const HISTORY_STATUSES: Order["status"][] = [
 interface RecentOrdersProps {
   orders: Order[];
   onCancel: (id: string) => void;
+  /** orderId -> who supplied the counterparty side of the fill — see hooks/use-market-data.ts's order.filled handling. Absent for an order that hasn't filled (or filled before this session started tracking it). */
+  matchedWith?: Record<string, "user" | "protocol">;
+}
+
+function MatchedWithBadge({ source }: { source: "user" | "protocol" }) {
+  return (
+    <span
+      className={cn(
+        "ml-2 rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+        source === "protocol"
+          ? "border-primary/30 bg-primary/10 text-primary"
+          : "border-border text-muted-foreground",
+      )}
+    >
+      {source === "protocol" ? "Protocol Liquidity" : "User"}
+    </span>
+  );
 }
 
 function EmptyState({ message }: { message: string }) {
@@ -46,10 +63,12 @@ function OrdersTable({
   orders,
   timeLabel,
   onCancel,
+  matchedWith,
 }: {
   orders: Order[];
   timeLabel: string;
   onCancel: (id: string) => void;
+  matchedWith: Record<string, "user" | "protocol">;
 }) {
   if (orders.length === 0) {
     return (
@@ -110,7 +129,12 @@ function OrdersTable({
                   {formatPrice(order.price)}
                 </td>
                 <td className="py-2.5 pr-4">
-                  <OrderStatusBadge status={order.status} />
+                  <span className="inline-flex items-center">
+                    <OrderStatusBadge status={order.status} />
+                    {order.status === "FILLED" && matchedWith[order.id] && (
+                      <MatchedWithBadge source={matchedWith[order.id]!} />
+                    )}
+                  </span>
                 </td>
                 <td className="py-2.5 pr-2 font-mono text-xs tabular-nums text-muted-foreground">
                   {timeLabel === "Expiration"
@@ -136,7 +160,7 @@ function OrdersTable({
   );
 }
 
-export function RecentOrders({ orders, onCancel }: RecentOrdersProps) {
+export function RecentOrders({ orders, onCancel, matchedWith = {} }: RecentOrdersProps) {
   const [tab, setTab] = useState("open");
 
   const openOrders = useMemo(
@@ -171,6 +195,7 @@ export function RecentOrders({ orders, onCancel }: RecentOrdersProps) {
               orders={openOrders}
               timeLabel="Expiration"
               onCancel={onCancel}
+              matchedWith={matchedWith}
             />
           </TabsContent>
           <TabsContent value="history" className="mt-0">
@@ -178,6 +203,7 @@ export function RecentOrders({ orders, onCancel }: RecentOrdersProps) {
               orders={historyOrders}
               timeLabel="Time"
               onCancel={onCancel}
+              matchedWith={matchedWith}
             />
           </TabsContent>
         </div>

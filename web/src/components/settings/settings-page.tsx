@@ -5,9 +5,10 @@ import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { PageShell, Card } from "@/components/layout/page-shell";
 import { useWallet } from "@/wallet/walletHooks";
-import { truncateAddress } from "@/lib/format";
+import { formatAmount, truncateAddress } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useSettings, applyDataAttributes } from "@/hooks/use-settings";
+import { useTreasury } from "@/hooks/use-treasury";
 
 const NAV = [
   "Wallet",
@@ -125,6 +126,7 @@ function ReadOnly({ children }: { children: React.ReactNode }) {
 
 export function SettingsPage() {
   const { status, wallet, openModal, disconnect } = useWallet();
+  const { balance: treasuryBalance, ppmStatus } = useTreasury();
   const { theme, setTheme } = useTheme();
   const {
     autoConnect, setAutoConnect,
@@ -477,6 +479,21 @@ export function SettingsPage() {
             </Row>
             <Row label="Network Status">
               <ReadOnly>{status === "connected" ? "Running" : "Idle"}</ReadOnly>
+            </Row>
+            <Row label="Treasury Status" hint="Real on-chain Treasury liquidity, not a mock balance">
+              <ReadOnly>{treasuryBalance && Number(treasuryBalance.balance) > 0 ? "Funded" : "Empty"}</ReadOnly>
+            </Row>
+            <Row label="Current Liquidity">
+              <ReadOnly>{treasuryBalance ? `${formatAmount(Number(treasuryBalance.balance) / 1e6, 4)} tNIGHT` : "—"}</ReadOnly>
+            </Row>
+            <Row label="Reserved Liquidity">
+              <ReadOnly>{treasuryBalance ? `${formatAmount(Number(treasuryBalance.reserved) / 1e6, 4)} tNIGHT` : "—"}</ReadOnly>
+            </Row>
+            <Row label="PPM Status">
+              <ReadOnly>{ppmStatus ? `Active — ${(ppmStatus.config.baseSpreadBps / 100).toFixed(2)}% base spread` : "—"}</ReadOnly>
+            </Row>
+            <Row label="Risk Status">
+              <ReadOnly>{ppmStatus ? ppmStatus.riskStatus[0]!.toUpperCase() + ppmStatus.riskStatus.slice(1) : "—"}</ReadOnly>
             </Row>
             <Row label="Copy Debug Information">
               <Btn onClick={copyDebug}>Copy</Btn>

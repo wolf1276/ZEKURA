@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertTriangle } from "lucide-react";
 import { Navbar } from "@/components/layout/navbar";
 import { Footer } from "@/components/layout/footer";
 import { MarketHeader } from "@/components/trade/market-header";
@@ -43,9 +44,30 @@ export function TradePage() {
   const [pair, setPair] = useState<AssetPair>(DEFAULT_PAIR);
   const [orders, setOrders] = useState<Order[]>([]);
   const [trackedOrderId, setTrackedOrderId] = useState<string | null>(null);
+  const [matchedWith, setMatchedWith] = useState<Record<string, "user" | "protocol">>({});
   const marketData = useMarketData(pair);
 
   useEffect(() => matcher.subscribe(setOrders), []);
+
+  // "Matched With: User / Protocol Liquidity" — tracked from the raw
+  // order.filled WS event rather than derived from Order itself, since a
+  // user-vs-user fill and a protocol fill carry different payload shapes
+  // (see types/matcher.ts's MatcherOrderFilledPayload).
+  useEffect(
+    () =>
+      matcher.subscribeMessages((message) => {
+        if (message.type !== "order.filled") return;
+        const payload = message.payload;
+        if ("order" in payload) {
+          const orderId = payload.order.id;
+          setMatchedWith((prev) => ({ ...prev, [orderId]: "protocol" }));
+        } else {
+          const { buyOrderId, sellOrderId } = payload.match;
+          setMatchedWith((prev) => ({ ...prev, [buyOrderId]: "user", [sellOrderId]: "user" }));
+        }
+      }),
+    [],
+  );
 
   const midPrice = useMemo(() => {
     const lastPrice = marketData.stats?.lastPrice ? Number(marketData.stats.lastPrice) : null;
@@ -85,6 +107,12 @@ export function TradePage() {
       />
 
       <main className="flex flex-1 flex-col">
+        {marketData.treasury && Number(marketData.treasury.balance) === 0 && (
+          <div className="flex items-center gap-2 border-b border-amber-500/30 bg-amber-500/[0.06] px-4 py-2.5 text-xs text-foreground/90 md:px-5">
+            <AlertTriangle className="size-3.5 flex-none text-amber-500" />
+            No protocol liquidity available. Orders will still match against other users&apos; resting orders.
+          </div>
+        )}
         <div className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[minmax(0,1fr)_320px_360px]">
           <div className="min-h-[480px] border-b border-border lg:col-span-2 lg:border-b-0 lg:border-r xl:col-span-1">
             <TradingChart
@@ -106,7 +134,7 @@ export function TradePage() {
         </div>
 
         <div className="border-t border-border">
-          <RecentOrders orders={orders} onCancel={handleCancel} />
+          <RecentOrders orders={orders} onCancel={handleCancel} matchedWith={matchedWith} />
         </div>
 
         {trackedOrder && (
