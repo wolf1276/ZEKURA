@@ -10,16 +10,16 @@ import * as Rx from 'rxjs';
 import * as ledger from '@midnight-ntwrk/ledger-v8';
 import { unshieldedToken } from '@midnight-ntwrk/ledger-v8';
 import { setNetworkId, getNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
-import { WalletFacade } from '@midnight-ntwrk/wallet-sdk-facade';
-import { DustWallet } from '@midnight-ntwrk/wallet-sdk-dust-wallet';
-import { HDWallet, Roles } from '@midnight-ntwrk/wallet-sdk-hd';
-import { ShieldedWallet } from '@midnight-ntwrk/wallet-sdk-shielded';
+import { NoOpTransactionHistoryStorage } from '@midnightntwrk/wallet-sdk-abstractions';
+import { WalletFacade } from '@midnightntwrk/wallet-sdk-facade';
+import { DustWallet } from '@midnightntwrk/wallet-sdk-dust-wallet';
+import { HDWallet, Roles } from '@midnightntwrk/wallet-sdk-hd';
+import { ShieldedWallet } from '@midnightntwrk/wallet-sdk-shielded';
 import {
   createKeystore,
-  NoOpTransactionHistoryStorage,
   PublicKey,
   UnshieldedWallet,
-} from '@midnight-ntwrk/wallet-sdk-unshielded-wallet';
+} from '@midnightntwrk/wallet-sdk-unshielded-wallet';
 
 import type { NetworkConfig, NetworkId } from './network.js';
 import {
