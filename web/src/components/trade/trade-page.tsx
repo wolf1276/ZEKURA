@@ -9,6 +9,7 @@ import { MarketInsightsPanel } from "@/components/trade/market-insights";
 import { TradePanel } from "@/components/trade/trade-panel";
 import { RecentOrders } from "@/components/trade/recent-orders";
 import { OrderStatusTimeline } from "@/components/trade/order-status-timeline";
+import { PrivacyProofPanel } from "@/components/trade/privacy-proof-panel";
 import { DEFAULT_PAIR } from "@/lib/mock/market";
 import { deriveMarketInsights } from "@/lib/marketInsights";
 import { useMarketData } from "@/hooks/use-market-data";
@@ -109,11 +110,14 @@ export function TradePage() {
         </div>
 
         {trackedOrder && (
-          <div className="border-t border-border p-4 md:p-5">
-            <p className="mb-3 text-xs uppercase tracking-wide text-muted-foreground">
-              Order status timeline
-            </p>
-            <OrderStatusTimeline key={trackedOrder.id} order={trackedOrder} />
+          <div className="space-y-4 border-t border-border p-4 md:p-5">
+            <div>
+              <p className="mb-3 text-xs uppercase tracking-wide text-muted-foreground">
+                Order status timeline
+              </p>
+              <OrderStatusTimeline key={trackedOrder.id} order={trackedOrder} />
+            </div>
+            <PrivacyProofPanel key={`${trackedOrder.id}-privacy`} order={trackedOrder} />
           </div>
         )}
       </main>
