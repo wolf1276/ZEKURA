@@ -1,76 +1,313 @@
-# Zekura
+<p align="center">
+  <img src="./web/public/zekura-mark.ico" width="72" height="72" alt="Zekura" />
+</p>
 
-> This project is built on the Midnight Network.
+<h1 align="center">Zekura</h1>
 
-A privacy-preserving exchange on Midnight — orders are committed on-chain, matched
-confidentially off-chain, and settled on-chain, without ever revealing asset,
-amount, side, price, or owner identity to a public observer.
+<p align="center">
+  <strong>A confidential decentralized exchange built on Midnight.</strong><br/>
+  Orders are committed on-chain, matched off-chain, and settled on-chain — without ever revealing asset, amount, side, price, or owner identity to a public observer.
+</p>
 
-Zekura is a full three-tier system:
+<p align="center">
+  <a href="https://github.com/wolf1276/ZEKURA/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/wolf1276/ZEKURA/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg" /></a>
+  <a href="https://docs.midnight.network/"><img alt="Built on Midnight" src="https://img.shields.io/badge/Built%20on-Midnight-6E56CF" /></a>
+  <a href="./contracts/exchange.compact"><img alt="Compact" src="https://img.shields.io/badge/Compact-0.31.1-6E56CF" /></a>
+  <a href="./tsconfig.json"><img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white" /></a>
+  <a href="./web/package.json"><img alt="Next.js" src="https://img.shields.io/badge/Next.js-16-black?logo=next.js&logoColor=white" /></a>
+  <a href="./package.json"><img alt="Node" src="https://img.shields.io/badge/Node-%E2%89%A522-339933?logo=node.js&logoColor=white" /></a>
+</p>
 
-1. **`contracts/exchange.compact`** — the on-chain commitment registry and
-   settlement contract.
-2. **`matcher/`** — the off-chain Matcher: the confidential order book,
-   price-time-priority matching engine, and `settle()` submitter.
-3. **`web/`** — the trading UI: wallet connection, order submission, live
-   order/activity feeds, and an on-chain privacy-proof panel.
+<p align="center">
+  Zekura is a continuous limit-order exchange where the chain never learns what is being traded, at what price, or by whom — and the one off-chain party that must see order contents to match them is cryptographically prevented from acting as anyone's owner.
+</p>
 
-All three are implemented, tested, and have been exercised together against
-live Midnight networks (Preview and Preprod) — see
-["End-to-end verification"](#end-to-end-verification) and
-[Deployment.md](./Deployment.md).
+---
 
-## Architecture
+## Overview
 
+Public order books leak information by construction: price, size, side, and
+counterparty are visible to anyone watching the chain, which is exactly the
+data a trader least wants exposed before a fill. Zekura removes that leak at
+the protocol level rather than papering over it in the UI.
+
+**What it is.** Zekura is a three-tier system — a Compact smart contract, an
+off-chain matching engine ("the Matcher"), and a trading UI — that implements
+a continuous, multi-party, multi-order limit-order exchange on
+[Midnight](https://docs.midnight.network/), a data-protection blockchain that
+lets applications prove facts about data with zero-knowledge proofs instead
+of publishing the data itself.
+
+**Why it exists.** Midnight's own example contracts demonstrate
+commitment-then-reveal privacy for single-round mechanisms — a sealed-bid
+auction, a bulletin board, a loan eligibility check. None of them show a
+*continuously operating* market: orders created, cancelled, or matched at any
+time, against any number of counterparties, with replay protection and a
+persistent per-order state machine. Zekura exists to answer that specific
+question: can a real limit-order exchange be built this way, and can the
+off-chain matcher — the one party that legitimately needs to see order
+contents to do its job — be structurally prevented from abusing that
+knowledge? See ["Product mapping"](#product-mapping) below for the full
+comparison against Midnight's official examples.
+
+**What problem it solves.** On a transparent order book, anyone can watch a
+large order arrive and front-run it, correlate wallets by trading pattern, or
+infer a firm's strategy from its resting orders. Zekura's on-chain footprint
+is a commitment (a hash) and a lifecycle state — nothing else. The order's
+real contents exist only in the owner's wallet and, for the single instant
+matching requires it, in the Matcher's off-chain database.
+
+**How it differs from a traditional DEX.** A traditional on-chain order book
+*is* the public order book — the contract stores price, size, and side
+directly, because the contract itself is what matches orders. Zekura inverts
+this: `exchange.compact` is a public **commitment registry**, never an order
+book. It never sees, stores, or matches order contents. The confidential
+order book lives entirely off-chain with the Matcher, which matches crossing
+orders in memory and submits `settle()` transactions that only *prove* a
+valid match occurred, without revealing why. The result is observable, not
+just claimed: the Trade page's "Verify privacy on-chain" panel fetches an
+order's actual live ledger record and shows it side by side with the order's
+real private fields, so the public/private split is something you can click
+and confirm.
+
+Zekura is a full production candidate, not a demo: **238 automated tests**
+across all three tiers, an independent security audit with one P0 finding
+found and fixed (see [`AUDIT.md`](./AUDIT.md)), and live deployments
+exercised end to end — including real settlement and rejected attacks — on
+two public Midnight networks (see [`Deployment.md`](./Deployment.md)).
+
+### Product mapping
+
+Zekura does not map cleanly onto a single official Midnight example
+contract — it composes patterns from several of them into one system:
+
+| Pattern | Where Zekura uses it | Closest official reference |
+|---|---|---|
+| Commitment-then-reveal privacy | `createOrder` commits; contents are only ever disclosed off-chain | [Private Reserve Auction](https://docs.midnight.network/examples/contracts/private-reserve-auction) |
+| DApp-specific pseudonymous identity (never a real wallet key) | `deriveOwnerId(secretKey)` | Private Reserve Auction's `getDappPubKey`; also the pattern Midnight's own `zk-loan`/`bboard` tutorials use |
+| Witness-verified reveal against a stored commitment | `cancelOrder`/`settle` re-derive `persistentCommit` and assert equality | [ZK Loan DApp](https://docs.midnight.network/tutorials/zk-loan), [Bulletin board DApp](https://docs.midnight.network/tutorials/bboard) |
+| Off-chain matching engine + on-chain settlement split | `matcher/` vs. `exchange.compact` | No single official example — closest ecosystem analogues are orderbook-DEX submissions in the Finance & DeFi category |
+
+If a single closest official product proposal is required, **Sealed-Bid
+Auction** is the right anchor to name — Zekura's authorization and
+commitment-hiding design is a direct extension of that pattern's techniques.
+But Zekura's actual mechanism (continuous limit-order matching across an
+arbitrary number of open orders, rather than one sealed-bid round with one
+reveal) exceeds what that example demonstrates. It is best described as
+**"a Private Reserve Auction pattern, generalized from one sealed round to a
+continuously operating order book."**
+
+## Key Features
+
+| Feature | What it means in Zekura |
+|---|---|
+| **Confidential Orders** | Asset, amount, side, price, owner, and expiry never touch the chain. Only a 32-byte commitment and a lifecycle state (`OPEN`/`FILLED`/`CANCELLED`/`EXPIRED`) are ever public. |
+| **Commitment-Based Order Model** | Orders are created with `persistentCommit<OrderDetails>(details, blinding)`; every later action (cancel, expire, settle) must supply witnesses that recompute the identical commitment before the contract trusts them. |
+| **Zero-Knowledge Settlement** | `settle()` takes no order data as arguments — it re-derives both orders' private details from witnesses and proves, in zero knowledge, that they satisfy the crossing rules, without disclosing the underlying values. |
+| **Proactive Matching Engine** | The Matcher's price-time-priority engine runs only on order arrival or removal — no poller, no timer, no background scan — and matches in O(1)-bounded operations against a per-asset, per-side price ladder. |
+| **Non-Custodial** | Zekura never holds funds or private keys. Wallets sign and submit their own `createOrder`/`cancelOrder` transactions directly; the Matcher only ever submits `settle()` for pairs it has independently verified against the chain. |
+| **Wallet Agnostic** | Connects through the standard Midnight DApp Connector API. Any wallet extension that implements it is auto-discovered; 1AM and Lace are recognized by name today. |
+| **Replay Protection** | Two independent layers: a one-way `OPEN → {FILLED, CANCELLED, EXPIRED}` state machine, and a `settledPairs` nullifier set — a matched pair can never settle twice. |
+| **Midnight Native** | Written in [Compact](https://docs.midnight.network/compact), Midnight's zero-knowledge smart contract language, and integrated through the official `midnight-js-*` provider stack — no custom cryptography, no bridge, no side-chain. |
+| **Open Source** | MIT-licensed, full source for the contract, matcher, and UI in this repository. |
+
+## Live Demo
+
+Zekura does not yet have a hosted public website, whitepaper, or demo video —
+this section reports that honestly rather than link to something that
+doesn't exist. What *is* live today:
+
+| Resource | Link |
+|---|---|
+| Source code | [github.com/wolf1276/ZEKURA](https://github.com/wolf1276/ZEKURA) |
+| Preview contract (Midnight testnet) | [`7e6fb224…52984`](https://preview.midnightexplorer.com/) on [Preview explorer](https://preview.midnightexplorer.com/) |
+| Preprod contract (Midnight testnet, default network) | [`7d1f1f67…7eb9d1`](https://preprod.midnightexplorer.com/) on [Preprod explorer](https://preprod.midnightexplorer.com/) |
+| Security audit | [`AUDIT.md`](./AUDIT.md) |
+| Deployment & live-verification record | [`Deployment.md`](./Deployment.md) |
+| Whitepaper / X (Twitter) / hosted app | Not published yet — see ["Roadmap"](#roadmap) |
+
+To run the full stack yourself against either live testnet, see
+["Getting Started"](#getting-started) and ["Wallet Setup"](#wallet-setup).
+
+## Screenshots
+
+Captured from a real `next dev` build running against live Preprod (headless
+Chromium, no wallet connected — the pre-connect / empty state every visitor
+sees first). The navbar's "Preprod" badge on every page confirms the app's
+default network. See ["Demo Instructions"](#getting-started) to drive a
+connected-wallet session yourself.
+
+<table>
+<tr>
+<td align="center"><b>Landing</b><br/><img src="./docs/screenshots/landing.png" width="380" /></td>
+<td align="center"><b>Overview / Dashboard</b><br/><img src="./docs/screenshots/dashboard.png" width="380" /></td>
+</tr>
+<tr>
+<td align="center"><b>Trade</b><br/><img src="./docs/screenshots/trade.png" width="380" /></td>
+<td align="center"><b>My Orders</b><br/><img src="./docs/screenshots/orders.png" width="380" /></td>
+</tr>
+<tr>
+<td align="center" colspan="2"><b>Activity</b><br/><img src="./docs/screenshots/activity.png" width="380" /></td>
+</tr>
+</table>
+
+> The Settings page exists in the app (`web/src/app/settings`) but was not
+> captured in this pass. Architecture is documented as diagrams in the next
+> section rather than a screenshot.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Live Demo](#live-demo)
+- [Screenshots](#screenshots)
+- [Architecture Overview](#architecture-overview)
+- [How It Works](#how-it-works)
+- [Privacy Model](#privacy-model)
+- [Technology Stack](#technology-stack)
+- [Repository Structure](#repository-structure)
+- [Getting Started](#getting-started)
+- [Wallet Setup](#wallet-setup)
+- [Running the Matcher](#running-the-matcher)
+- [Smart Contracts](#smart-contracts)
+- [Testing](#testing)
+- [CI/CD](#cicd)
+- [Security](#security)
+- [Performance](#performance)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [Documentation](#documentation)
+- [FAQ](#faq)
+- [License](#license)
+- [Acknowledgements](#acknowledgements)
+
+## Architecture Overview
+
+Zekura has four moving parts: the **frontend** (wallet-facing UI), the
+**wallet layer** (the user's own extension plus a local proof server), the
+**Matcher** (confidential order book and settlement submitter), and the
+**exchange contract** (public commitment registry). A **Network Manager**
+inside the frontend keeps all of them pointed at the same Midnight network.
+
+```mermaid
+flowchart TB
+    subgraph Browser["Browser — web/ (Next.js)"]
+        UI["Trade · Orders · Activity · Dashboard"]
+        NM["Network Manager<br/>(networkConfig.ts / NetworkProvider)"]
+    end
+
+    subgraph WalletLayer["Wallet Layer"]
+        Ext["Wallet Extension<br/>1AM or Lace<br/>(DApp Connector API v4)"]
+        PS["Local Proof Server<br/>:6300<br/>(fallback when the wallet has no in-browser prover)"]
+    end
+
+    subgraph OffChain["Off-chain — matcher/"]
+        Matcher["Matcher Server<br/>order book · matching engine · settlement queue"]
+        DB[("SQLite<br/>orders / matches / settlements")]
+    end
+
+    subgraph OnChain["Midnight Network"]
+        Contract["exchange.compact<br/>commitment registry + settlement"]
+        Indexer["Indexer<br/>(public ledger reads)"]
+        Node["Node"]
+    end
+
+    UI <-->|"connect / sign / submit"| Ext
+    UI <-->|"REST + WebSocket"| Matcher
+    UI -.->|"read live ledger record<br/>(privacy-proof panel)"| Indexer
+    NM -.-> UI
+    NM -.-> Matcher
+
+    Ext -->|"createOrder / cancelOrder"| Contract
+    Ext -.->|"proof request<br/>(if no in-browser prover)"| PS
+    Matcher -->|"settle()"| Contract
+    Matcher -.->|"proof request"| PS
+    Matcher --- DB
+
+    Contract <--> Node
+    Indexer <--> Node
 ```
-                     ┌──────────────────────────────────────────┐
-                     │                web/ (Next.js)             │
-                     │  wallet connect · order form · live feeds  │
-                     └───────────────┬─────────────────┬─────────┘
-                                     │                 │
-                     createOrder /   │                 │  REST + WebSocket
-                     cancelOrder     │                 │  (orders, trades,
-                     (signed via     ▼                 │   stats, order book)
-                     wallet extension,      ┌───────────▼─────────────┐
-                     proven, submitted)     │      matcher/            │
-                                            │  confidential order book, │
-                     ┌──────────────────────┤  price-time-priority      │
-                     │                       │  matching, settle()       │
-                     ▼                       │  submission               │
-        ┌─────────────────────────┐          └─────────────┬─────────────┘
-        │  exchange.compact        │◀──────── settle() ─────┘
-        │  (public commitment      │
-        │   registry + settlement) │
-        └─────────────────────────┘
+
+**Frontend (`web/`).** A Next.js app that never itself holds keys or proves
+anything — it delegates signing and proving to the connected wallet
+extension, and reads/writes order state through the Matcher's REST/WebSocket
+API. See [`web/src/services/midnight/exchangeContract.ts`](./web/src/services/midnight/exchangeContract.ts)
+for the direct contract calls and [`web/src/services/matcher/matcherClient.ts`](./web/src/services/matcher/matcherClient.ts)
+for the Matcher client.
+
+**Wallet Layer.** Any Midnight DApp-Connector-compatible extension. 1AM
+implements in-browser proving; Lace does not, so the app falls back to a
+local proof server for Lace sessions only. See ["Wallet Setup"](#wallet-setup).
+
+**Matcher (`matcher/`).** A standalone Fastify server that owns the actual
+confidential order book. It receives full order details off-chain (after the
+wallet has already registered the order's commitment on-chain itself),
+independently re-verifies that disclosure against the live indexer, matches
+crossing orders in memory, and submits `settle()`. See
+[`matcher/ARCHITECTURE.md`](./matcher/ARCHITECTURE.md) for the full request
+flow and database schema.
+
+**Exchange Contract (`contracts/exchange.compact`).** The sole source of
+truth on-chain. Five exported circuits, no admin role, no privileged caller —
+see ["Smart Contracts"](#smart-contracts).
+
+**Network Manager.** `web/src/network/networkConfig.ts` is the single source
+of truth for every network Zekura supports (`preview`, `preprod` today).
+Critically, the app does **not** choose the active network itself at
+runtime — it adopts whatever network the connected wallet reports, since the
+DApp Connector's own guidance is that DApps should follow the wallet's
+configuration.
+
+**Settlement flow.** See the sequence diagram in ["How It Works"](#how-it-works)
+below.
+
+## How It Works
+
+The full lifecycle — **wallet → commitment → Matcher → settlement → ledger →
+UI updates** — for one order that gets matched:
+
+```mermaid
+sequenceDiagram
+    actor Trader
+    participant Wallet as Wallet Extension
+    participant Chain as exchange.compact
+    participant Matcher
+    participant UI as web/ UI (WebSocket)
+
+    Trader->>Wallet: Fill in order (asset, side, price, amount)
+    Wallet->>Wallet: commitment = persistentCommit(OrderDetails, blinding)
+    Wallet->>Chain: createOrder(orderId, commitment)
+    Chain-->>Wallet: confirmed — order OPEN, commitment on-chain
+    Wallet->>Matcher: POST /orders (full OrderDetails + blinding, off-chain)
+    Matcher->>Chain: read on-chain commitment (via indexer, free)
+    Matcher->>Matcher: recompute commitment, verify it matches on-chain + submitted
+    Matcher->>Matcher: search opposite side's book (price-time priority)
+    alt crossing order found
+        Matcher->>Matcher: atomically claim both orders (OPEN → MATCHED)
+        Matcher-->>UI: WS order.matched
+        Matcher->>Chain: settle(buyOrderId, sellOrderId)
+        Chain->>Chain: re-derive both orders' details from witnesses,<br/>verify commitments, assert crossing rules
+        Chain-->>Matcher: confirmed — both orders FILLED
+        Matcher-->>UI: WS order.filled
+    else no match yet
+        Matcher-->>UI: WS order.created (resting, OPEN)
+    end
+    UI-->>Trader: order status timeline, order book, and activity feed<br/>update live — no manual refresh
 ```
 
-`exchange.compact` is **not** an order book — it never sees, stores, or
-matches order contents. It records that an order with a given ID exists,
-what its commitment is, and what lifecycle state it's in (`OPEN` / `FILLED`
-/ `CANCELLED` / `EXPIRED`), nothing else. The **Matcher owns the
-confidential order book**: wallets disclose full order details to it
-off-chain (after registering the order's commitment on-chain themselves),
-it matches crossing orders in memory, and submits `settle()` transactions
-to fill them. The **web app** is the human-facing client for both: it talks
-to the contract directly (via the Midnight DApp Connector API and a wallet
-extension) for `createOrder`/`cancelOrder`, and to the Matcher's REST/WS API
-for order book, activity, and settlement status.
+Two properties make this safe without a trusted intermediary:
 
-See [matcher/ARCHITECTURE.md](./matcher/ARCHITECTURE.md) for the Matcher's
-request flow, database schema, and security model in depth, and
-[AUDIT.md](./AUDIT.md) for the contract's full security review.
-
-## Contract Address
-
-| Network     | Contract Address | Deployed |
-|-------------|-------------------|----------|
-| Preview     | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` (post-audit build, see [AUDIT.md](./AUDIT.md)) | 2026-07-15 |
-| Preprod     | `7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1` (post-audit build, see [AUDIT.md](./AUDIT.md)) | 2026-07-16 |
-| Undeployed (local devnet) | redeploy locally via `npm run setup` | — |
-
-See [Deployment.md](./Deployment.md) for the full deployment record (deployer
-addresses, verification steps run, and current production status) for both
-networks. Both Preview and Preprod run the identical audited contract build.
+1. **The Matcher cannot forge disclosure.** `OrderService.submitOrder`
+   recomputes the commitment from the disclosed `OrderDetails` and requires
+   it to equal *both* the client-supplied commitment *and* the one already
+   recorded on-chain — a party that doesn't actually know an order's true
+   contents cannot get it accepted into the book.
+2. **The Matcher cannot cancel an order it merely knows about.** `settle()`'s
+   witnesses never include `ownerSecretKey` — that witness is exclusive to
+   `cancelOrder`, and the Matcher never holds one. See
+   ["Privacy Model"](#privacy-model) for why this specific boundary needed a
+   dedicated audit fix.
 
 ## Privacy Model
 
@@ -80,435 +317,795 @@ The contract's only on-chain state is the `orders` ledger — a
 `{kind, orderId}`. Everything else about an order lives off-chain, in the
 owner's wallet and (once disclosed for settlement) the Matcher's database.
 
-### What observers can learn
-
-Anyone reading the public ledger, indexer, or a submitted transaction can see:
-
-- That an order with a given `orderId` **exists**, and its 32-byte
-  **commitment** (a SHA-256-family hash — reveals nothing about its
-  contents without the preimage).
-- Its **lifecycle state**: `OPEN`, `FILLED`, `CANCELLED`, or `EXPIRED`, and
-  the **order of state transitions** (i.e., that some `settle()` or
-  `cancelOrder()` call happened, and roughly when).
-- That a `createOrder`/`cancelOrder`/`settle`/`expireOrder` transaction was
-  submitted, by which address, at which block — standard Midnight
-  transaction metadata is not hidden by this contract.
-- The **total count** of orders and their commitments (the `orders` map is
-  fully enumerable), which lets an observer infer overall exchange volume
-  in *number of orders*, but not their sizes, prices, or sides.
-
 ### What remains confidential
 
 Never written to the ledger, never leaves the owner's wallet except to
 whoever they explicitly disclose it to (the Matcher, off-chain, for
 settlement):
 
-- **`asset`** — which token/pair the order trades
-- **`amount`** — order size
-- **`side`** — buy or sell
-- **`owner`** — a DApp-specific identity (`deriveOwnerId(secret)`), never
-  the caller's real Zswap public key or wallet address
-- **`price`** — limit price
-- **`expiresAt`** — order expiry (except indirectly, via the public fact
-  that an `expireOrder()` call succeeded)
+| Field | Description |
+|---|---|
+| `asset` | Which token/pair the order trades |
+| `amount` | Order size |
+| `side` (`isBuy`) | Buy or sell |
+| `owner` | A DApp-specific pseudonymous identity (`deriveOwnerId(secret)`) — never the caller's real Zswap public key or wallet address |
+| `price` | Limit price |
+| `expiresAt` | Order expiry (except indirectly, via the public fact that an `expireOrder()` call succeeded) |
 
-A network observer therefore cannot reconstruct the order book, cannot see
-who is trading what against whom, and cannot correlate two orders as
-belonging to the same owner (the owner field is a domain-separated hash of
-a per-DApp secret, not a reusable public key). The Matcher — the one party
-that *does* see full order contents, by design, in order to match and
-settle them — is explicitly **not** trusted to act as an order's owner: see
-"What users prove" below and [AUDIT.md](./AUDIT.md)'s P0 finding for why
-that boundary needed a dedicated fix.
+### What observers can learn
 
-### What users prove
+Anyone reading the public ledger, an indexer, or a submitted transaction can see:
+
+- That an order with a given `orderId` **exists**, and its 32-byte
+  **commitment** (a hash — reveals nothing about its contents without the
+  preimage).
+- Its **lifecycle state** (`OPEN`/`FILLED`/`CANCELLED`/`EXPIRED`) and the
+  order of state transitions.
+- That a `createOrder`/`cancelOrder`/`settle`/`expireOrder` transaction was
+  submitted, by which address, at which block — standard Midnight
+  transaction metadata is not hidden by this contract.
+- The **total count** of orders and their commitments (the `orders` map is
+  fully enumerable), letting an observer infer overall order *count* — but
+  not size, price, or side.
+
+### What validators learn
+
+Validators verify a zero-knowledge proof that a circuit call satisfies the
+contract's rules, and apply the resulting public-state transcript — the same
+`{orderId → commitment, state}` update any other observer would eventually
+see via the indexer. Validators never see the private witnesses
+(`OrderDetails`, `orderBlinding`, `ownerSecretKey`) that produced the proof;
+Midnight's zk-SNARK verification confirms the proof is valid without
+re-executing the private computation that generated it.
+
+### What the Matcher learns
+
+The Matcher is legitimately disclosed a submitting order's **full**
+`OrderDetails` and blinding factor off-chain — it cannot match or settle
+orders without them. It is explicitly **not** trusted with an order's
+`ownerSecretKey`: `settle()`'s witness set never calls that witness, so the
+Matcher structurally cannot satisfy `cancelOrder`'s owner check for any order
+it merely knows the contents of. This boundary is why `DELETE /orders/:id`
+on the Matcher's API can only remove an order from its own book/database —
+it can never submit an on-chain `cancelOrder()`.
+
+### Selective disclosure
 
 A wallet creates an order by committing to its private details
-(`persistentCommit<OrderDetails>(details, blinding)`) and submitting only
-the resulting 32-byte `commitment` on-chain via `createOrder`. Nothing about
-the order's contents is ever revealed at creation time.
+(`persistentCommit<OrderDetails>(details, blinding)`) and submitting only the
+resulting 32-byte `commitment` on-chain via `createOrder` — nothing about the
+order's contents is revealed at creation time. To cancel, the owner's wallet
+supplies the *same* private details and blinding factor back to the
+`cancelOrder` circuit as witnesses; the circuit recomputes the commitment and
+checks it against the one on record, proving knowledge without ever writing
+the contents to the chain. Disclosure to the Matcher is a separate, explicit,
+off-chain act by the owner's wallet (`POST /orders`) — never something the
+contract or the Matcher can compel.
 
-To cancel an order, the owner's wallet supplies the *same* private details
-and blinding factor back to the `cancelOrder` circuit as witnesses. The
-circuit recomputes the commitment from those witnesses and checks it against
-the one on record — proving the caller knows the order's true contents,
-without ever writing those contents to the chain.
+### Trust assumptions and threat model
 
-Knowing an order's contents is necessary but not sufficient to cancel it —
-the Matcher also legitimately knows them (a wallet discloses full order
-details off-chain for settlement), so `cancelOrder` needs a second,
-independent check that only the actual owner can pass. The owner field is
-`deriveOwnerId(secret)` (a domain-separated hash of a secret only the
-owner's wallet holds), computed and embedded in `owner` when the order is
-created; `cancelOrder` re-derives it from whatever secret the caller
-supplies via the `ownerSecretKey` witness and requires the two to match.
-This intentionally does **not** use `ownPublicKey()` — see
-[AUDIT.md](./AUDIT.md) for why that would be an authorization bypass.
+| Actor | Trusted for | Not trusted for |
+|---|---|---|
+| Order owner's wallet | Its own `OrderDetails`, blinding factor, and `ownerSecretKey`. The only party able to `cancelOrder` its own orders, and the only party that submits `createOrder`/`cancelOrder` on-chain. | Nothing about other orders. |
+| Matcher (off-chain) | Disclosed full `OrderDetails` + blinding for orders it is settling (required to call `settle`). Its own funded operator wallet, distinct from any user's. | Any order's `ownerSecretKey` — structurally never disclosed to it. Cannot cancel orders it did not create. |
+| Any network observer | Can read all public ledger state (`orders`, `settledPairs`, `eventLog`) and submit any transaction. | Cannot forge a commitment preimage or a caller's `ownerSecretKey`/`orderBlinding` (never on-chain). |
+| The prover (any caller's own frontend) | Controls every witness return value for its own calls. | Must never be trusted as an authorization signal by itself without a cryptographic binding — this is the general form of the audit's P0 finding (see ["Security"](#security)). |
+
+A network observer cannot reconstruct the order book, cannot see who is
+trading what against whom, and cannot correlate two orders as belonging to
+the same owner (the owner field is a domain-separated hash of a per-DApp
+secret, not a reusable public key).
 
 **Observable, not just documented:** once an order is submitted through the
 web app, the Trade page's "Verify privacy on-chain" panel
-(`web/src/services/midnight/orderVerification.ts` +
-`web/src/components/trade/privacy-proof-panel.tsx`) fetches that order's
-*actual* live ledger record from the connected network's indexer and shows
-it side by side with the order's real private fields the app already holds
-locally — so this privacy split is something you can click and confirm, not
-only read about.
+([`orderVerification.ts`](./web/src/services/midnight/orderVerification.ts) +
+[`privacy-proof-panel.tsx`](./web/src/components/trade/privacy-proof-panel.tsx))
+fetches that order's *actual* live ledger record from the connected
+network's indexer and shows it side by side with the order's real private
+fields the app already holds locally.
 
-## Tech Stack
+## Technology Stack
 
-- **Compact** — Midnight's smart contract language (`contracts/exchange.compact`)
-- **Compact toolchain** `0.31.1` (compiler version; the `compact` CLI tool
-  itself reports `0.5.1` — these are two independent version numbers, see
-  `contracts/managed/exchange/compiler/contract-info.json`), language
-  version `0.23.0` (contract pragma requires `>= 0.16`)
-- **`@midnight-ntwrk/compact-runtime`** — in-memory circuit execution for tests
-- **`@midnight-ntwrk/compact-js`** / **`midnight-js-*`** — deployment, providers, wallet/proof/indexer plumbing
-- **TypeScript** + **tsx** — scripts and tests
-- **Fastify**, **better-sqlite3**, **ws**, **Zod** — the Matcher server (see [matcher/README.md](./matcher/README.md))
-- **Next.js**, **React**, **Tailwind** — the web app (see [web/README.md](./web/README.md))
-- **Vitest** — matcher and web test suites; a hand-rolled assertion runner for the contract suite
-- **Docker Compose** — local devnet (node, indexer, proof-server) / standalone proof-server for public networks
+| Layer | Technology |
+|---|---|
+| **Smart contract language** | [Compact](https://docs.midnight.network/compact) `0.31.1` (compiler), language version `0.23.0` (pragma requires `>= 0.16`), runtime `0.16.0` — [`contracts/exchange.compact`](./contracts/exchange.compact) |
+| **Contract tooling** | `@midnight-ntwrk/compact-js`, `@midnight-ntwrk/compact-runtime` (in-memory circuit execution for tests), `midnight-js-contracts` / `midnight-js-*` providers (deployment, indexer, proof, wallet plumbing) |
+| **Matcher backend** | Node.js ≥ 22, TypeScript, [Fastify](https://fastify.dev/) (REST), [`ws`](https://github.com/websockets/ws) (WebSocket broadcast), [Zod](https://zod.dev/) (validation), [pino](https://getpino.io/) (structured logging) |
+| **Matcher persistence** | [`better-sqlite3`](https://github.com/WiseLibs/better-sqlite3) — synchronous SQLite, used for atomic claim transactions |
+| **Frontend framework** | [Next.js](https://nextjs.org/) `16.2.10` (App Router), [React](https://react.dev/) `19.2.4` |
+| **Frontend UI** | Tailwind CSS 4, [shadcn/ui](https://ui.shadcn.com/) + Radix primitives, `lucide-react`, `framer-motion`, `sonner` (toasts), `lightweight-charts` (trading chart) |
+| **Wallet integration** | `@midnight-ntwrk/dapp-connector-api` — the standard interface every Midnight-compatible wallet extension implements |
+| **Database** | SQLite (Matcher's `orders`/`matches`/`settlements` tables) — the Matcher's local system of record; the chain itself stores no order data |
+| **Testing** | [Vitest](https://vitest.dev/) (matcher, web); a hand-rolled assertion runner exercising compiled circuits directly via `@midnight-ntwrk/compact-runtime` (contract) |
+| **Infrastructure** | Docker Compose — local devnet (`midnight-node`, `indexer-standalone`, `proof-server`) for local development; a standalone proof server for Preview/Preprod |
+| **CI** | GitHub Actions ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) |
 
-## Prerequisites
+## Repository Structure
 
-- Node.js ≥ 22
-- Docker (with Compose v2)
-- The [Compact compiler](https://docs.midnight.network/) at the version this project targets (`compact update 0.31.1`; `compact --version` reports the CLI tool version, not the compiler version — see "Tech Stack" above)
-
-## Setup
-
-```bash
-npm install          # installs the root + matcher workspace (matcher is an npm workspace member)
-cd web && npm install # web is a standalone package with its own lockfile
+```
+zekura/
+├── contracts/
+│   ├── exchange.compact          # The sole production contract — commitment registry + settlement
+│   └── managed/exchange/         # Compiled output of `npm run compile` (circuits, keys, zkir, TS bindings)
+├── matcher/                      # Off-chain confidential order book + settlement engine (npm workspace)
+│   ├── src/
+│   │   ├── api/                  # Fastify REST routes — validate, delegate, serialize
+│   │   ├── orderbook/            # Pure in-memory order book (Bucket, AssetBook, OrderBook) — no I/O
+│   │   ├── matcher/              # Matching engine + price-time-priority strategy — no I/O
+│   │   ├── db/                   # better-sqlite3 schema + repositories — the system of record
+│   │   ├── settlement/           # settle() client + retry queue
+│   │   ├── websocket/            # SocketServer — WS event broadcast
+│   │   ├── services/             # Orchestration: OrderService, SettlementService
+│   │   ├── types/                # Domain types
+│   │   ├── utils/                # Config, logging, Zod schemas, the commitment codec
+│   │   ├── app.ts                # Fastify app factory — fully testable, deps injected
+│   │   └── index.ts               # Composition root — the only file with real SDK wiring
+│   ├── tests/                    # Mirrors src/, plus integration/ and concurrency/
+│   ├── ARCHITECTURE.md           # Request flow, database schema, security & concurrency model
+│   ├── API.md                    # Full REST/WebSocket reference
+│   └── MATCHER.md                # Matching algorithm and settlement lifecycle
+├── web/                          # Trading UI (standalone package, own lockfile)
+│   └── src/
+│       ├── app/                  # Next.js App Router routes (/, /trade, /orders, /activity, /dashboard, /settings)
+│       ├── components/           # Page and UI components, organized by feature
+│       ├── network/               # Network Manager — single source of truth for network config
+│       ├── wallet/                 # DApp Connector integration, wallet discovery, connection lifecycle
+│       ├── services/
+│       │   ├── midnight/          # Direct contract calls, commitment codec, privacy verification
+│       │   └── matcher/           # REST/WebSocket client for the Matcher API
+│       ├── hooks/, lib/, types/, shims/
+│       └── app/api/matcher/       # Same-origin proxy routes to the Matcher REST API
+├── src/                          # Root-level CLI/deploy/setup scripts
+│   ├── setup.ts                  # Compile + deploy in one step, with faucet-fund polling
+│   ├── deploy.ts                 # Deploy the compiled contract
+│   ├── cli.ts                    # Read-only CLI (look up an order, check balance)
+│   ├── check-balance.ts, wallet.ts, wallet-state.ts, network.ts
+├── scripts/
+│   ├── e2e-check.ts               # Smoke check against a deployed contract
+│   └── sync-retry.ts              # Wraps a command with sync-retry semantics
+├── tests/exchange.test.ts        # Contract test suite (34 tests) — drives compiled circuits directly
+├── docs/screenshots/              # README screenshots
+├── docker-compose.yml            # Local devnet: node, indexer, proof server
+├── AUDIT.md                       # Full security audit of the contract
+├── Deployment.md                  # Deployment history and live end-to-end verification record
+└── .github/workflows/ci.yml       # CI pipeline
 ```
 
-## Compile
+## Getting Started
+
+### Prerequisites
+
+- **Node.js ≥ 22**
+- **Docker** with Compose v2 (for the local devnet / local proof server)
+- The **[Compact compiler](https://docs.midnight.network/getting-started/installation)**, pinned to the version this project targets:
+  ```bash
+  compact update 0.31.1
+  ```
+  (`compact --version` reports the CLI tool's own version — currently `0.5.1`
+  — which is a different number from the compiler version above; both are
+  documented in ["Smart Contracts"](#smart-contracts).)
+
+### Installation
+
+```bash
+git clone https://github.com/wolf1276/ZEKURA.git zekura
+cd zekura
+
+npm install            # installs the root + matcher workspace (matcher is an npm workspace member)
+cd web && npm install   # web is a standalone package with its own lockfile
+```
+
+### Environment variables
+
+Copy `web/.env.example` to `web/.env.local` and fill in the network(s) you
+intend to use:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREVIEW` | *(none)* | This app's deployed `exchange.compact` address on Preview. Required to submit orders while on Preview — see the [Contract Address table](#smart-contracts). |
+| `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREPROD` | *(none)* | Same, for Preprod — the app's default network. |
+| `NEXT_PUBLIC_PROOF_SERVER_URL` | `http://127.0.0.1:6300` | Local proof server, used only when the connected wallet has no in-browser prover (e.g. Lace). |
+| `NEXT_PUBLIC_MATCHER_WS_URL` | `ws://localhost:4000/ws` | Matcher WebSocket feed, called directly from the browser. |
+| `MATCHER_API_URL` | `http://localhost:4000` | Matcher REST base URL, used server-side by the Next.js same-origin proxy routes (`app/api/matcher/**`). |
+
+The active network itself (Preview vs. Preprod) is **not** an env var — it's
+chosen at runtime by whatever network the connected wallet reports. See
+["Wallet Setup"](#wallet-setup).
+
+### Development
+
+```bash
+# Terminal 1 — local proof server (only needed for local devnet or a wallet without in-browser proving)
+docker compose up -d --wait proof-server
+
+# Terminal 2 — Matcher
+cd matcher && npm run dev
+
+# Terminal 3 — web app
+cd web && npm run dev
+```
+
+Open `http://localhost:3000`. By default the app targets **Preprod** — see
+["Smart Contracts"](#smart-contracts) for the currently deployed addresses,
+and ["Wallet Setup"](#wallet-setup) for connecting a wallet.
+
+### Running locally against your own devnet
+
+To run against a fully local network instead of a public testnet:
+
+```bash
+docker compose up -d --wait   # node, indexer, proof server — see docker-compose.yml
+npm run setup                  # compiles the contract and deploys to the local devnet
+```
+
+`npm run setup` writes the deployed address to `.midnight-state.json`
+(gitignored) and prints it to the console.
+
+### A full trade, end to end
+
+1. Start infrastructure (proof server, Matcher, web app) as above.
+2. Connect a wallet (1AM or Lace) via the navbar.
+3. Submit an order on the Trade page — this signs and submits a real
+   `createOrder(orderId, commitment)` call through the connected wallet
+   ([`exchangeContract.ts`](./web/src/services/midnight/exchangeContract.ts)),
+   no mocks.
+4. Watch it propagate live: the Trade page's status timeline, Orders,
+   Activity, and Overview all update automatically from the same Matcher
+   WebSocket feed — no manual refresh.
+5. Use the "Verify privacy on-chain" panel to fetch the order's actual live
+   ledger record and compare it against the private fields the app holds
+   locally.
+6. To see a match, repeat step 3 with a second, crossing order (opposite
+   side, crossing price, same asset) from a second wallet/browser profile —
+   the Matcher matches it against the resting order and submits `settle()`
+   automatically.
+
+## Wallet Setup
+
+Zekura connects through the standard **Midnight DApp Connector API**
+(`@midnight-ntwrk/dapp-connector-api` v4), the same interface every
+Midnight-compatible wallet extension implements.
+
+### Supported wallets
+
+| Wallet | Injection key | Notes |
+|---|---|---|
+| **[1AM Wallet](https://1am.xyz/)** | `window.midnight['1am']` | Recommended. Shielded by default, implements in-browser proving (`getProvingProvider()`) — no local proof server required. |
+| **[Lace](https://www.lace.io/midnight)** | `window.midnight.mnLace` | Does not implement `getProvingProvider()` — the app falls back to the local proof server (`NEXT_PUBLIC_PROOF_SERVER_URL`) for Lace sessions only. |
+| Any other DApp-Connector-compatible wallet | *(any key under `window.midnight`)* | Auto-discovered generically — nothing about a new wallet needs to be known ahead of time. See [`walletRegistry.ts`](./web/src/wallet/walletRegistry.ts). |
+
+### Connection lifecycle
+
+Handled end to end by [`WalletProvider.tsx`](./web/src/wallet/WalletProvider.tsx):
+
+- **Connect** — via the wallet picker modal; the `connect()` call happens
+  synchronously inside the click so the extension's approval pop-up isn't
+  blocked, with a generous timeout as a safety net against a hung extension.
+- **Disconnect** — clears local session state and the "reconnect on load" flag.
+- **Reconnect** — if the browser was previously connected, the same wallet
+  is silently reconnected on page load once the Network Manager has settled
+  on a network; a rejected/failed silent reconnect falls back to the manual
+  picker without surfacing an error.
+- **States** — `idle` / `connecting` / `connected` / `unsupported-network` /
+  `disconnected` / `unavailable` / `error`, all modeled explicitly by
+  `WalletStatus`. Connector failures are normalized into a `WalletError`
+  with a user-facing message.
+
+### Network selection
+
+The DApp Connector v4 API has no push events for network changes, so the app
+polls `getConnectionStatus()` and adopts whatever network the wallet
+reports as its own — there is no separate "choose a network in the app"
+control. `unsupported-network` fires only for a wallet-reported id Zekura
+has no `NetworkConfig` for (i.e. anything other than `preview`/`preprod`).
+
+### Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| Wallet picker shows no installed wallets | The extension isn't injecting under a recognized key — confirm it implements the Midnight DApp Connector API and is enabled for the current site. |
+| `unsupported-network` after connecting | The wallet is set to a network Zekura doesn't configure (only `preview`/`preprod` exist today — see ["Roadmap"](#roadmap) for Mainnet). |
+| Order submission hangs at the approval pop-up | Using Lace without a running local proof server — start one with `docker compose up -d --wait proof-server` and confirm `NEXT_PUBLIC_PROOF_SERVER_URL` points at it. |
+| "not deployed on this network" | `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREVIEW`/`_PREPROD` isn't set for the network the wallet is on — see the [Contract Address table](#smart-contracts). |
+
+## Running the Matcher
+
+The Matcher (`matcher/`) is an npm workspace member of the root package —
+it shares `node_modules` and imports the root's `src/wallet.ts`/`src/network.ts`
+and the compiled contract artifacts directly rather than duplicating them.
+
+### Prerequisites
+
+- Everything in ["Getting Started"](#getting-started) (Node ≥ 22, Docker, the Compact compiler).
+- The exchange contract compiled (`npm run compile` at the repo root) and
+  deployed to the network you intend to run against.
+- A local proof server reachable at the target network's proof server URL.
+- Its own funded operator wallet — **should be a distinct, independently
+  funded wallet on Preview/Preprod**, not the contract deployer's.
+
+### Start
+
+```bash
+cd matcher
+npm run dev      # tsx watch — fast local iteration
+npm run build    # real tsc build to dist/
+npm start        # runs the build
+```
+
+> **Build output note:** because `index.ts` imports the root project's
+> `src/wallet.ts`/`src/network.ts` directly, `tsc`'s inferred `rootDir` spans
+> both `matcher/src` and the repo root's `src`. The compiled entry point
+> lands at `dist/matcher/src/index.js`, not `dist/index.js` — this is what
+> `npm start` runs.
+
+By default the Matcher targets whatever network `.midnight-state.json`
+(repo root) has active. Override with environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MATCHER_PORT` | `4000` | HTTP + WebSocket port |
+| `MATCHER_HOST` | `0.0.0.0` | Bind address |
+| `MATCHER_DB_PATH` | `./data/matcher.db` | SQLite file path (`:memory:` also works) |
+| `MATCHER_LOG_LEVEL` | `info` | pino log level |
+| `MATCHER_PRETTY_LOGS` | `true` outside `NODE_ENV=production` | Human-readable vs. structured JSON logs |
+| `MATCHER_SETTLEMENT_MAX_RETRIES` | `5` | Transient-failure retry budget per settlement |
+| `MATCHER_SETTLEMENT_RETRY_DELAY_MS` | `5000` | Linear backoff base delay |
+| `MATCHER_WALLET_SEED` | falls back to the root project's per-network deployer seed | The Matcher's own operator wallet |
+| `PRIVATE_STATE_PASSWORD` | local-devnet placeholder | Wallet private-state store password (≥16 chars) |
+
+See [`matcher/README.md`](./matcher/README.md), [`matcher/ARCHITECTURE.md`](./matcher/ARCHITECTURE.md),
+and [`matcher/API.md`](./matcher/API.md) for the full reference.
+
+### API surface (summary)
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/orders` | Disclose a signed order for matching/settlement |
+| `DELETE` | `/orders/:id` | Remove an order from the Matcher's book (never on-chain) |
+| `GET` | `/orders/:id` | Fetch one order |
+| `GET` | `/orders/open` | All currently `OPEN` orders |
+| `GET` | `/orderbook` | Aggregated bid/ask snapshot for one asset |
+| `GET` | `/trades` | Recent fills for one asset |
+| `GET` | `/stats` | Rolling-window price/volume stats |
+| `GET` | `/health` | Liveness check |
+| `WS` | `/ws` | Live event stream (`order.created`, `order.matched`, `order.settling`, `order.filled`, `order.failed`, `order.cancelled`, `order.expired`) |
+
+Full request/response shapes, error codes, and the WebSocket message
+contract are in [`matcher/API.md`](./matcher/API.md).
+
+## Smart Contracts
+
+### Contract addresses
+
+| Network | Contract Address | Deployed |
+|---|---|---|
+| **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` (post-audit build) | 2026-07-15 |
+| **Preprod** (default network) | `7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1` (post-audit build) | 2026-07-16 |
+| Undeployed (local devnet) | not persistent — redeploy via `npm run setup` | — |
+
+Both networks run the **identical audited contract build**. See
+[`Deployment.md`](./Deployment.md) for the full deployment record (deployer
+addresses, funding, and every verification pass) and [`AUDIT.md`](./AUDIT.md)
+for the security review that produced this build.
+
+### Compile
 
 ```bash
 npm run compile
 ```
 
-Compiles `contracts/exchange.compact` to `contracts/managed/exchange/`.
+Compiles [`contracts/exchange.compact`](./contracts/exchange.compact) to
+`contracts/managed/exchange/` — 5 circuits (`createOrder`, `getOrder`,
+`cancelOrder`, `expireOrder`, `settle`, plus the exported `pure` circuit
+`deriveOwnerId`), compiler `0.31.1`, language version `0.23.0`, runtime
+`0.16.0`.
 
-## Run Tests
+### Deploy
+
+```bash
+docker compose up -d --wait proof-server   # local proof server for the target network
+npm run setup -- --network preview          # compile + deploy in one step
+```
+
+`npm run setup` starts the required services, compiles the contract, and
+deploys it. On `preview`/`preprod` it prints a faucet URL and wallet address,
+then polls for funding before continuing — fund the printed address and it
+proceeds automatically. The deployed address is written to
+`.midnight-state.json` (gitignored) and printed as `Contract Address: <address>`.
+
+```bash
+npm run cli        # read-only CLI: look up an order by ID, check balance
+npm run test:e2e    # smoke check against the deployed contract
+```
+
+To redeploy fresh — a new network, or after a change that alters a circuit's
+verifier key — use `npm run setup -- --network <preview|preprod>`, then
+update `web/.env.local`'s matching `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_*`
+variable and this table.
+
+### Circuits
+
+| Circuit | Authorization | Purpose |
+|---|---|---|
+| `createOrder(orderId, commitment)` | None — permissionless registration | Registers a new `OPEN` order's commitment |
+| `getOrder(orderId)` | None — public read | Returns `{commitment, state}` (prefer the indexer for reads; this costs a full transaction) |
+| `cancelOrder(orderId)` | `deriveOwnerId(ownerSecretKey()) == details.owner` | Owner-only cancellation |
+| `expireOrder(orderId)` | Time-based (`blockTimeGte(expiresAt)`) — callable by anyone once expired | Marks a past-expiry order `EXPIRED` |
+| `settle(buyOrderId, sellOrderId)` | Commitment verification + business-rule asserts, no caller-identity check (intentional — callable by the Matcher on behalf of two other parties) | Atomically fills a matching pair |
+| `deriveOwnerId(secretKey)` *(pure, exported)* | — | Derives a wallet's DApp-specific pseudonymous identity, so off-chain code can compute the identical value |
+
+### State machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> OPEN: createOrder
+    OPEN --> CANCELLED: cancelOrder (owner only)
+    OPEN --> EXPIRED: expireOrder (after expiresAt)
+    OPEN --> FILLED: settle (matched pair)
+    CANCELLED --> [*]
+    EXPIRED --> [*]
+    FILLED --> [*]
+```
+
+All states other than `OPEN` are terminal — every transition circuit asserts
+the current state is `OPEN` before proceeding, so double-cancellation,
+double-settlement, cancel-after-expiry, and expire-after-cancel are all
+rejected. See ["Security"](#security) for the replay-protection layer
+underneath this.
+
+## Testing
 
 Three independent, offline test suites — no devnet, proof server, or wallet
 required for any of them — cover **238 tests** across the whole system:
 
 ```bash
-npm run test                    # root: 34 tests — contracts/exchange.compact
-npm run test --workspace=matcher # matcher: 185 tests — order book, matching, settlement, API
-cd web && npm run test          # web: 19 tests — commitment codec, formatting, order-status logic
+npm run test                     # root: 34 tests — contracts/exchange.compact
+npm run test --workspace=matcher  # matcher: 185 tests — order book, matching, settlement, API
+cd web && npm run test            # web: 19 tests — commitment codec, formatting, order-status logic
 ```
 
-**Root (`tests/exchange.test.ts`, 34 tests)** — drives the compiled circuits
-directly through `@midnight-ntwrk/compact-runtime`'s in-memory
-`CircuitContext`. Covers `createOrder`/`getOrder`/`cancelOrder` positive and
-negative paths (including the owner-identity regression test for
-[AUDIT.md](./AUDIT.md)'s P0 finding), `settle`/`expireOrder` matching,
-mismatches, replay, atomicity, and boundary values, and the **privacy
-invariant** test — asserting that after a create+cancel cycle, the `orders`
-and `eventLog` ledger entries expose *only* their declared public fields and
-never leak `amount`, `price`, `owner`, `asset`, `isBuy`, or `expiresAt`.
-
-**Matcher (`matcher/tests/`, 185 tests, >95% line coverage enforced)** —
-the in-memory order book, price-time-priority matching engine, SQLite
-persistence, settlement retry queue, REST/WebSocket API, and commitment
-verification against on-chain state, all exercised with real SQLite
-(`:memory:`) and a real matching engine; only the two seams that face the
-live network (`SettleCircuitCaller`, `OnChainOrderReader`) are faked. See
-[matcher/README.md](./matcher/README.md).
-
-**Web (`web/tests/`, 19 tests)** — the browser-side `OrderDetails`
-commitment codec (determinism and no-collision checks on the exact
-`persistentCommit` encoding a wallet must reproduce bit-for-bit before
-calling `createOrder`) and the pure formatting/order-status logic the UI
-renders from.
+| Suite | Tests | What it covers |
+|---|---|---|
+| **Root** (`tests/exchange.test.ts`) | 34 | Drives the compiled circuits directly through `@midnight-ntwrk/compact-runtime`'s in-memory `CircuitContext`. Covers `createOrder`/`getOrder`/`cancelOrder` positive and negative paths (including the owner-identity regression test for the audit's P0 finding), `settle`/`expireOrder` matching, mismatches, replay, atomicity, boundary values, and the **privacy invariant** test — asserting the ledger never leaks `amount`, `price`, `owner`, `asset`, `isBuy`, or `expiresAt`. |
+| **Matcher** (`matcher/tests/`) | 185, >95% line coverage enforced | The in-memory order book, price-time-priority matching engine, SQLite persistence, settlement retry queue, REST/WebSocket API, and commitment verification against on-chain state — exercised with real SQLite (`:memory:`) and a real matching engine; only the two seams that face the live network (`SettleCircuitCaller`, `OnChainOrderReader`) are faked. |
+| **Web** (`web/tests/`) | 19 | The browser-side `OrderDetails` commitment codec (determinism and no-collision checks on the exact `persistentCommit` encoding a wallet must reproduce bit-for-bit) and the pure formatting/order-status logic the UI renders from. |
 
 ```bash
-npm run build                    # root: tsc --noEmit
-npm run lint --workspace=matcher # matcher: eslint
+npm run build                     # root: tsc --noEmit
+npm run lint --workspace=matcher  # matcher: eslint
 npm run build --workspace=matcher # matcher: tsc build
-cd web && npm run lint           # web: eslint
-cd web && npm run build          # web: production Next.js build
+cd web && npm run lint            # web: eslint
+cd web && npm run build           # web: production Next.js build
 ```
+
+**Coverage:** the matcher enforces >95% line/statement coverage in CI via
+`npm run test:coverage` (`@vitest/coverage-v8`). The contract suite is
+hand-rolled and assertion-based (boundary values chosen deliberately — type
+maxima, zero bytes, equal-price crossing — not fuzzed); no property-based or
+fuzzing harness exists in this project today.
 
 ## CI/CD
 
 [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) runs on every push
-to `main` and every pull request. A single job installs the pinned Compact
-toolchain, then for each of the three packages: compiles/typechecks, lints
-(matcher, web), runs its full test suite, and (web) produces a real
-production build. A push that breaks compilation, a type error, a lint
-violation, a failing test, or a broken production build in *any* of the
-three packages fails CI.
+to `main` and every pull request. A single `ubuntu-latest` job:
 
-## Deploy
+1. Installs Node 22 and the pinned Compact toolchain (`compact update 0.31.1`,
+   via the [official installer](https://docs.midnight.network/getting-started/installation)).
+2. `npm ci` at the repo root (root + matcher workspace).
+3. **Compile** — `npm run compile` (contract).
+4. **Typecheck** — root (`tsc --noEmit`), matcher, and web (`next typegen && tsc --noEmit`).
+5. **Lint** — matcher and web (`eslint`). The root package has no lint script.
+6. **Test** — root (34), matcher (185), web (19) — all three suites.
+7. **Build** — a real production Next.js build for `web`.
 
-```bash
-docker compose up -d --wait proof-server   # local proof server for the target network
-npm run setup -- --network preview         # compile + deploy in one step
-```
+A compilation failure, a type error, a lint violation, a failing test, or a
+broken production build in *any* of the three packages fails CI. There is no
+separate deployment stage in this pipeline — contract deployment is a manual,
+explicit step (`npm run setup`) documented in ["Smart Contracts"](#smart-contracts),
+not something CI performs automatically.
 
-`npm run setup` starts the required services for the chosen network,
-compiles the contract, and deploys it. On `preview`/`preprod` it prints a
-faucet URL and wallet address, then polls for funding before continuing —
-fund the printed address from the faucet and it proceeds automatically.
+## Security
 
-The deployed address is written to `.midnight-state.json` (gitignored) and
-printed to the console as `Contract Address: <address>`.
+Full findings, methodology, and verification log: **[`AUDIT.md`](./AUDIT.md)**.
 
-```bash
-npm run cli           # read-only CLI: look up an order by ID, check balance
-npm run test:e2e       # smoke check against the deployed contract
-```
+### Summary
 
-## Deployment
+One **P0 critical authorization bypass** was found and fixed: `cancelOrder`
+verified the caller's identity using `ownPublicKey()`, a witness function
+with no cryptographic binding to the actual transaction signer — any party
+that legitimately knows an order's committed details (which the Matcher
+always does, since wallets disclose full order details to it for settlement)
+could have forged `cancelOrder` on an order it does not own. No other P0/P1
+issues were found. **Production Readiness Score: 10/10** as of the
+2026-07-16 addendum, after both a fresh deployment past the fixed
+`cancelOrder` verifier key and a live end-to-end verification pass on
+Preprod (see [`Deployment.md`](./Deployment.md)).
 
-Both Preview and Preprod already have live, audited deployments — see the
-[Contract Address](#contract-address) table above. Full deployment history
-(deployer addresses, funding, every verification step run before and after
-each deploy, and a recorded live trade round trip on Preprod) lives in
-[Deployment.md](./Deployment.md), not duplicated here. To deploy fresh
-(a new network, or after a contract change that alters a circuit's verifier
-key — see [AUDIT.md](./AUDIT.md)'s "Remaining Risks" for why that matters),
-use the `npm run setup -- --network <preview|preprod>` command above, then
-update `web/.env.local`'s matching `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_*`
-variable and this README's Contract Address table.
+### Replay protection
 
-## Wallet
+Two independent layers:
 
-The frontend (`web/`) connects through the standard Midnight DApp Connector
-API (`@midnight-ntwrk/dapp-connector-api`), the same interface every
-Midnight-compatible wallet extension implements. Two wallets are recognized
-by name (`web/src/wallet/walletRegistry.ts`), any other connector-compatible
-wallet injected under `window.midnight` is picked up generically:
+1. **State machine (primary).** `OPEN → FILLED` is one-way; no circuit ever
+   transitions an order out of a terminal state. A replayed `settle()` on an
+   already-filled pair fails before touching anything else.
+2. **`settledPairs` nullifier set (defense-in-depth).** A hash of
+   `[buyId, sellId]` in positional order, inserted before a pair can settle.
+   Provably redundant with (1) under the current circuit set — kept as
+   insurance against a future circuit that could re-open an order without
+   going through the same state-transition path.
 
-- **1AM Wallet** (`window.midnight['1am']`) — recommended, shielded by
-  default, implements in-browser proving (`getProvingProvider()`).
-- **Lace** (`window.midnight.mnLace`) — does not implement
-  `getProvingProvider()`; the app falls back to the local proof server
-  (`NEXT_PUBLIC_PROOF_SERVER_URL`, default `http://127.0.0.1:6300`) for
-  Lace sessions only (`web/src/services/midnight/exchangeContract.ts`).
+### Commitment verification
 
-`web/src/wallet/WalletProvider.tsx` covers the full connection lifecycle:
+The contract's sole authentication primitive is
+`persistentCommit<OrderDetails>(details, blinding) == commitment` — a hash
+preimage proof, never a signature scheme. Only a party that actually knows an
+order's true `(OrderDetails, blinding)` pair can produce a value that
+recomputes to a given on-chain commitment. The Matcher independently
+reimplements this same recomputation off-chain
+([`orderDetailsCodec.ts`](./matcher/src/utils/orderDetailsCodec.ts)) and
+requires it to match **both** the client-supplied commitment **and** the one
+already recorded on-chain before trusting a disclosed order.
 
-- **Connect** — via the wallet picker modal; the `connect()` call happens
-  synchronously inside the click so the extension's approval pop-up isn't
-  blocked, with a generous timeout as a safety net against a hung extension.
-- **Disconnect** — clears local session state and the "reconnect on load"
-  flag.
-- **Reconnect** — if the browser was previously connected, the same wallet
-  is silently reconnected on page load once the Network Manager has settled
-  on a network; a rejected/failed silent reconnect falls back to `idle`
-  (the manual picker) without surfacing an error, since there's no user
-  gesture to show one against.
-- **Loading / error / wrong-network states** — `WalletStatus` models
-  `idle` / `connecting` / `connected` / `unsupported-network` /
-  `disconnected` / `unavailable` / `error` explicitly; connector failures
-  (rejected request, blocked permission, disconnected mid-call, etc.) are
-  normalized into a `WalletError` with a user-facing message
-  (`web/src/wallet/walletConnector.ts`).
-- **Network sync** — the DApp Connector v4 API has no push events for
-  network changes, so `getConnectionStatus()` is polled; whatever network
-  the wallet reports is adopted as the app's own (`web/src/network/`), so
-  there is no "wrong network" state to get stuck in — only
-  `unsupported-network` for a wallet-reported id Zekura has no
-  `NetworkConfig` for (i.e. anything other than `preview`/`preprod`).
+### Witness validation
 
-## Preprod
+Witness functions (`orderDetails`, `orderBlinding`, `ownerSecretKey`) are
+supplied by whichever party's frontend is calling the circuit — the contract
+never trusts a witness's return value as an identity signal on its own. This
+is exactly the class of bug the P0 finding was: `ownPublicKey()` is also a
+witness function, and using it directly for authorization let any prover
+supply an arbitrary value. The fix replaces it with
+`deriveOwnerId(ownerSecretKey())`, a **hash-commitment-based** identity check
+the caller cannot forge without the real secret — the same pattern Midnight's
+own reference contracts (zk-loan, battleship, bboard, private-party) use for
+this purpose.
 
-**Preprod is the default network the web app runs against**
-(`DEFAULT_NETWORK_ID` in `web/src/network/networkConfig.ts`) — this is the
-primary deployment target for this repo. To run against it:
+### Authorization
 
-```bash
-cd web
-cp .env.example .env.local   # if you haven't already
-npm install
-npm run dev
-```
+| Circuit | Mechanism |
+|---|---|
+| `createOrder` | None — intentional; a commitment carries no privilege until its contents are revealed. |
+| `getOrder` | None — public read. |
+| `cancelOrder` | `deriveOwnerId(ownerSecretKey()) == details.owner` — the audit's fix. |
+| `expireOrder` | Time-based (`blockTimeGte`), correctly not identity-gated — expiry is a public fact. |
+| `settle` | Commitment verification (proof of knowledge of both orders) + business-rule asserts; intentionally no caller-identity check, since `settle` is meant to be callable by the Matcher on behalf of two other parties. |
 
-`NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREPROD` in `web/.env.local` must
-point at a live Preprod deployment (see the Contract Address table above —
-currently `7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1`).
-Point your wallet extension at Preprod and connect — the app adopts
-whatever network the wallet reports (see "Wallet" above), it isn't chosen
-by an env var at runtime; the env var only supplies this app's own contract
-address on that network. For read-only sanity checks against Preprod
-without a browser at all, use `npm run test:e2e -- --network preprod` from
-the repo root (see Deployment.md).
+### Responsible disclosure
 
-## Preview
+This project does not yet have a formal `SECURITY.md` or dedicated security
+contact. If you find a vulnerability, please open a
+[GitHub Security Advisory](https://github.com/wolf1276/ZEKURA/security/advisories/new)
+on this repository (private by default) rather than a public issue, so a fix
+can land before public disclosure.
 
-Same app, pointed at Preview instead — switch networks from the wallet
-picker/Network Manager in the navbar, or start fresh against Preview
-directly:
+### Known limitations (accepted, documented risks)
 
-```bash
-cd web
-npm run dev
-```
-
-`NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREVIEW` in `web/.env.local` must
-point at a live Preview deployment (see the Contract Address table above).
-Switch your wallet extension to Preview; the app follows.
-
-## Demo Instructions
-
-A full, real (non-mocked) trade round trip through the web app:
-
-1. **Start infrastructure**: `docker compose up -d --wait proof-server`
-   (repo root), then start the Matcher (`cd matcher && npm run dev`) and the
-   web app (`cd web && npm run dev`).
-2. **Connect a wallet** (1AM or Lace) via the navbar — see "Wallet" above
-   for what each connection state looks like.
-3. **Submit an order** on the Trade page — this signs and submits a real
-   `createOrder(orderId, commitment)` circuit call through the connected
-   wallet (`web/src/services/midnight/exchangeContract.ts`), no mocks. The
-   wallet's approval pop-up is the actual proof/sign/submit step.
-4. **Watch it propagate live**: the Trade page's order status timeline, the
-   Orders page, the Activity feed, and the Overview page all update
-   automatically from the same Matcher WebSocket feed
-   (`web/src/services/matcher/matcherClient.ts`) — no manual refresh.
-5. **Verify the privacy property**: once the order appears, use the
-   "Verify privacy on-chain" panel under the order status timeline. It
-   fetches the order's *actual* live ledger record from the connected
-   network's indexer and shows it side by side with the order's real
-   private fields (side, price, amount, expiry) that this app already holds
-   locally — observably confirming that only `{commitment, state}` ever
-   reached the chain (see "Privacy Model" above and
-   `web/src/services/midnight/orderVerification.ts`).
-
-To see a match and settlement specifically (rather than a single order),
-repeat step 3 with a second, crossing order (opposite side, crossing
-price, same asset) from a second wallet/browser profile — the Matcher
-matches it against the resting order and submits `settle()` automatically;
-both orders' status timelines advance to `FILLED` without either wallet
-doing anything further.
-
-## End-to-end verification
-
-The full flow — **wallet → trade → Matcher → settlement → UI updates** —
-has been exercised at two different levels, and this section reports both
-honestly rather than overstating either:
-
-- **Fully verified, live, on real Preprod infrastructure — twice,
-  independently, in separate sessions** (see [Deployment.md](./Deployment.md)
-  for both complete transcripts): on-chain `createOrder()` calls submitted
-  directly, accepted by the live Matcher (which independently recomputed and
-  cross-checked each commitment against the indexer), matched by the
-  price-time-priority engine, settled with a real on-chain `settle()`
-  transaction, and the resulting `FILLED` state confirmed by an independent
-  direct ledger read (not just trusting the Matcher's own database). Live
-  failure-path checks (forged commitment, unregistered order, replay of an
-  already-filled order) were exercised and rejected correctly both times.
-  The Matcher's `GET /trades`/`GET /stats` endpoints — what the web app's
-  Activity and Overview pages consume — were confirmed to reflect the fill.
-- **Not yet exercised**: a literal browser session with a real wallet
-  extension (1AM/Lace) driving a click-through of the Demo Instructions
-  above end to end. Every code path that flow would exercise has either
-  been driven directly (same SDK calls, same providers) or covered by the
-  238 automated tests, and the web app has been verified to build and
-  render every route cleanly (production build + a headless-browser render
-  pass across `/trade`, `/orders`, `/activity`, `/dashboard`, zero console
-  errors) — but the actual wallet-extension approval pop-up flow requires a
-  human with a funded wallet extension installed, which this automated
-  verification pass cannot simulate.
-
-## Production readiness
-
-- **Contract**: audited ([AUDIT.md](./AUDIT.md), one P0 fixed), deployed
-  identically to Preview and Preprod, 34/34 tests passing.
-- **Matcher**: 185/185 tests passing, >95% line coverage enforced in CI-run
-  coverage thresholds, typecheck and lint clean.
-- **Web**: 19/19 tests passing, typecheck and lint clean, production build
-  succeeds.
-- **CI**: compiles and tests all three packages on every push (see "CI/CD"
-  above).
-- **Mainnet**: out of scope — no Mainnet `NetworkConfig` exists in this repo
-  (`src/network.ts` / `web/src/network/networkConfig.ts` define only
-  `preview`/`preprod`).
-
-See [AUDIT.md](./AUDIT.md) and [Deployment.md](./Deployment.md) for the full
-security and deployment record.
-
-## Initial Idea
-
-Zekura started from a simple question: can you build a real limit-order
-exchange — continuous matching, cancellation, expiry, multiple concurrent
-orders and owners — on Midnight, where the chain never learns what's being
-traded, at what price, or by whom, and where the one off-chain party that
-*does* need to see order contents (the Matcher, to match and settle them)
-is cryptographically prevented from acting as anyone's owner?
-
-The closest official Midnight example is the
-[Private Reserve Auction](https://docs.midnight.network/examples/contracts/private-reserve-auction)
-contract — hiding a reserve price while keeping bid amounts public, using
-the same `persistentHash`-based DApp-specific-identity pattern
-(`getDappPubKey`/`deriveOwnerId`) Zekura's `cancelOrder` fix relies on. But
-a sealed-bid auction is a single-round, single-item, single-winner
-mechanism: bids are submitted once, the auction closes, one price is
-revealed. Zekura is a **continuous, multi-party, multi-order exchange** —
-orders can be created, cancelled, or matched at any time against any number
-of counterparties, with replay protection and a persistent state machine
-per order rather than a one-shot reveal. It sits closer to the Finance &
-DeFi orderbook-DEX category in Midnight's ecosystem (alongside projects
-like [SilentLedger](https://github.com/bytewizard42i/SilentLedger) and
-[LunarSwap](https://github.com/OpenZeppelin/midnight-apps)) than to a
-single-round auction — see "Product mapping" below for the full comparison.
-
-## Product mapping
-
-Zekura does not map cleanly onto a single official Midnight example
-contract, because it composes patterns from several of them into one
-system:
-
-| Pattern | Where Zekura uses it | Closest official reference |
+| ID | Risk | Status |
 |---|---|---|
-| Commitment-then-reveal privacy | `createOrder` commits, contents only ever disclosed off-chain | [Private Reserve Auction](https://docs.midnight.network/examples/contracts/private-reserve-auction) |
-| DApp-specific pseudonymous identity (never a real wallet key) | `deriveOwnerId(secretKey)` | Private Reserve Auction's `getDappPubKey`; also the pattern Midnight's own `zk-loan`/`bboard` tutorials use |
-| Witness-verified reveal against a stored commitment | `cancelOrder`/`settle` re-derive `persistentCommit` and assert equality | [ZK Loan DApp](https://docs.midnight.network/tutorials/zk-loan), [Bulletin board DApp](https://docs.midnight.network/tutorials/bboard) |
-| Off-chain matching engine + on-chain settlement split | `matcher/` vs. `exchange.compact` | No single official example — closest ecosystem analogues are orderbook-DEX submissions like SilentLedger/LunarSwap (Finance & DeFi) |
+| P2-1 | `orderId` squatting / front-running griefing — `createOrder` binds no relationship between `orderId` and the (still-private) owner, so an observer who predicts an `orderId` can front-run it with a garbage commitment, permanently occupying that ID. No funds or existing orders at risk. | Accepted — closing it in-contract would require revealing part of the owner's identity in the clear at creation time. Recommended off-chain mitigation: derive `orderId` unpredictably and bound to the owner (`persistentHash(deriveOwnerId(secret), freshNonce)`). |
+| P3-1 | `settle`/`expireOrder` place no bound on `expiresAt` — a wallet can commit to an order that never expires or expires immediately. Only affects the order's own owner. | Accepted — flagged for wallet-side input validation. |
+| P3-2 | Commitment/blinding-factor hygiene is unenforceable on-chain — a buggy or malicious wallet that reuses a blinding factor across two orders with identical contents produces linkable commitments. | Accepted — a wallet-implementation requirement, not fixable in-contract. |
+| P3-3 | `getOrder` costs a full transaction for a public read that's available for free from the indexer. | Informational — `getOrder` is a scoped deliverable; the frontend should prefer the indexer for reads. |
 
-If a single closest official product proposal is required, **Sealed-Bid
-Auction** is the right anchor to name, since Zekura's authorization and
-commitment-hiding design is a direct extension of that pattern's
-techniques — but Zekura's actual mechanism (continuous limit-order
-matching across an arbitrary number of open orders, rather than one
-sealed-bid round with one reveal) exceeds what that example demonstrates.
-It is best described as **"a Private Reserve Auction pattern, generalized
-from one sealed round to a continuously operating order book."**
+## Performance
 
-## Screenshots
+Zekura's performance-relevant design decisions, in order of how directly
+they affect trade latency:
 
-Captured from a real `next dev` build running against live Preprod (headless
-Chromium, no wallet connected — the pre-connect / empty state every visitor
-sees first). See "Demo Instructions" above to drive a full connected-wallet
-session yourself; that part still requires a human with a wallet extension,
-which this repo's automated verification cannot provide.
+- **The order book is never scanned wholesale.** `OrderBook` is
+  `Map<assetKey, AssetBook>`; each `AssetBook` holds one sorted `Bucket` per
+  side (best price first for that side, FIFO within a price level for time
+  priority). Every operation is O(1) or bounded to one asset's one bucket —
+  `add`, `has`, `remove`, `oppositeBucket` never touch unrelated assets or
+  the opposite side's book.
+- **Matching is event-driven, not polled.** `MatchingEngine.onOrderArrived`
+  runs only when a new order arrives or an existing one is removed — there
+  is no timer, no poller, no periodic re-scan. `PriceTimePriorityStrategy`
+  walks the opposite bucket's natural best-first order and stops at the
+  first non-crossing price level, since sorted iteration guarantees nothing
+  worse could match either.
+- **Claims are atomic without locking overhead.** The Matcher is a single
+  Node.js process; the claim step (verify both orders still `OPEN`, flip to
+  `MATCHED`, insert the match row) runs inside one synchronous
+  `better-sqlite3` transaction with no `await` in between — JavaScript's
+  single-threaded event loop guarantees no other request can interleave, so
+  there's no distributed lock or CAS retry loop needed for the common case.
+  `OrderRepository`'s `PRIMARY KEY` constraint is the actual source of truth
+  for duplicate-id detection; the `exists()` pre-check is only a fast path.
+- **Settlement never blocks matching.** `SettlementQueue` is a per-key
+  single-flight retry queue — a match's `settle()` submission and retries
+  run independently of the order book, so a slow or retrying settlement
+  cannot stall new orders from being accepted or matched.
+- **Reads that don't need a proof are free.** The Matcher verifies
+  commitments against the indexer (a public GraphQL read), never a paid
+  `getOrder()` transaction — this keeps order submission latency dominated
+  by proof generation and chain confirmation, not by extra on-chain reads.
+- **Settlement retry uses linear backoff with a bounded budget**
+  (`MATCHER_SETTLEMENT_MAX_RETRIES`, default 5; `MATCHER_SETTLEMENT_RETRY_DELAY_MS`,
+  default 5000ms), and `SettlementService.recoverPendingSettlements()`
+  re-enqueues any match still `MATCHED`/`SETTLING` after a process restart —
+  so a Matcher crash mid-settlement doesn't silently drop a match; it
+  resumes from the DB, the durable record of what's still outstanding.
 
-**Landing**
-![Landing page](./docs/screenshots/landing.png)
+### Concurrency and scale
 
-**Dashboard**
-![Dashboard](./docs/screenshots/dashboard.png)
+The current architecture is a **single-process Matcher** — correct and fast
+for one operator's order book (bounded, sorted, in-memory structures; a
+single synchronous SQLite writer), but not yet horizontally scaled. See
+["Roadmap"](#roadmap) for what a multi-instance Matcher would require
+(a shared order book / leader-election for settlement submission, since
+`settle()` must never be double-submitted for the same match).
 
-**Trade**
-![Trade page](./docs/screenshots/trade.png)
+### Future optimizations
 
-**My Orders**
-![My Orders](./docs/screenshots/orders.png)
+- Batched/parallel proof generation for concurrent order submissions.
+- A dedicated read-replica or candle/history table for `/stats`, which today
+  computes on read from persisted matches on every request.
+- Horizontal Matcher scaling (see above) once order volume exceeds a single
+  process's throughput.
 
-**Activity**
-![Activity feed](./docs/screenshots/activity.png)
+## Roadmap
 
-Note the "Preprod" badge in the navbar on every page above, confirming the
-app's default network.
+This roadmap is grounded in what the audit, deployment record, and code
+already flag as open work — not speculative feature ideas.
 
-## Product X Profile
+### Near-term
 
-_(placeholder — no X/Twitter account exists for this project yet. The
-landing page's nav/footer "X" links (`web/src/components/launch/launch-page.tsx`)
-are themselves placeholders (`href="#"`) for the same reason. Replace this
-section with the real handle/profile URL once one exists.)_
+- **A literal wallet-extension click-through.** Every code path the demo
+  flow exercises has been driven directly (same SDK calls, same providers)
+  or covered by the 238 automated tests, and the production build renders
+  every route cleanly — but a real browser session with a funded 1AM/Lace
+  wallet performing the actual approval pop-up flow has not yet been
+  recorded (see [`Deployment.md`](./Deployment.md)'s "Not yet exercised" notes).
+- **Off-chain mitigations for the audit's accepted risks** (P2-1 `orderId`
+  squatting, P3-1 unbounded `expiresAt`, P3-2 blinding-factor hygiene) —
+  wallet-side input validation and unpredictable `orderId` derivation.
+- **A formal `SECURITY.md` and `CONTRIBUTING.md`** — neither exists in this
+  repository yet; see ["Contributing"](#contributing) and ["Security"](#security).
+
+### Mid-term
+
+- **Horizontal Matcher scaling** for order volume beyond a single process
+  (see ["Performance"](#performance)).
+- **A dedicated stats/candle store** to avoid recomputing `/stats` from raw
+  matches on every request.
+- **Additional wallet integrations** beyond 1AM and Lace, as more DApp
+  Connector-compatible wallets reach the Midnight ecosystem.
+
+### Long-term
+
+- **Mainnet.** Out of scope today — no Mainnet `NetworkConfig` exists in
+  this repo (`src/network.ts`/`web/src/network/networkConfig.ts` define only
+  `preview`/`preprod`). Adding it is intentionally isolated to one new entry
+  in `networkConfig.ts` per that file's own documentation.
+- **A published whitepaper, hosted app deployment, and demo video** — none
+  exist yet (see ["Live Demo"](#live-demo)).
+
+## Contributing
+
+There is no formal `CONTRIBUTING.md` in this repository yet — this section
+describes the de facto workflow enforced by CI today.
+
+### Development workflow
+
+1. Fork and clone the repository, then follow ["Getting Started"](#getting-started).
+2. Make changes in the relevant package (`contracts/`, `matcher/`, or `web/`).
+3. Before opening a PR, run the same checks CI runs for the package(s) you touched:
+   ```bash
+   npm run compile && npm run build && npm run test              # root / contract
+   npm run typecheck --workspace=matcher && npm run lint --workspace=matcher && npm run test --workspace=matcher
+   cd web && npm run typecheck && npm run lint && npm run test && npm run build
+   ```
+4. Open a pull request against `main`. Every push and PR is gated by
+   [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) — see ["CI/CD"](#cicd).
+
+### Coding standards
+
+- TypeScript throughout, `tsc --noEmit`/`next typegen && tsc --noEmit` clean.
+- ESLint clean for `matcher/` and `web/` (`eslint.config.js`/`eslint.config.mjs`).
+- No linter is configured for the root package or the Compact contract
+  itself — contract changes are reviewed against `AUDIT.md`'s documented
+  security model and the existing regression suite in `tests/exchange.test.ts`.
+- New behavior should come with a test in the corresponding suite
+  (`tests/`, `matcher/tests/`, or `web/tests/`) — the matcher enforces >95%
+  line coverage in CI.
+
+### Branch naming and commit conventions
+
+This repository's own commit history uses a loose
+`type(scope): summary` convention (e.g. `feat(trade): ...`,
+`fix(ci): ...`, `docs(readme): ...`) — follow that pattern for consistency,
+though it is not currently enforced by a commit-lint tool.
+
+### Pull request process
+
+Open a PR against `main`; CI must pass (compile, typecheck, lint, test, and
+a production build for `web`) before merge. Any change to
+`contracts/exchange.compact` that alters a circuit's logic changes its
+verifier key — call this out explicitly in the PR description, since it
+requires a fresh deployment (see ["Smart Contracts"](#smart-contracts)).
+
+## Documentation
+
+| Document | Covers |
+|---|---|
+| [`matcher/README.md`](./matcher/README.md) | Matcher quick start, tech stack, project layout |
+| [`matcher/ARCHITECTURE.md`](./matcher/ARCHITECTURE.md) | Component responsibilities, request flow, database schema, security & concurrency model |
+| [`matcher/API.md`](./matcher/API.md) | Full REST/WebSocket API reference |
+| [`matcher/MATCHER.md`](./matcher/MATCHER.md) | Matching algorithm and settlement lifecycle in depth |
+| [`web/README.md`](./web/README.md) | Next.js app basics |
+| [`AUDIT.md`](./AUDIT.md) | Full security audit — findings, fixes, verification log |
+| [`Deployment.md`](./Deployment.md) | Deployment history and live end-to-end verification record on Preview/Preprod |
+| [`contracts/exchange.compact`](./contracts/exchange.compact) | The contract source itself — heavily commented, the ground truth for circuit behavior |
+| [Midnight developer documentation](https://docs.midnight.network/) | Compact language reference, DApp Connector API, network architecture |
+
+There is no separately published whitepaper or hosted API-docs site for
+Zekura today — `AUDIT.md` and the `matcher/*.md` files above serve that role
+for now.
+
+## FAQ
+
+**Which wallets does Zekura support?**
+Any wallet implementing the Midnight DApp Connector API. 1AM and Lace are
+recognized by name; see ["Wallet Setup"](#wallet-setup).
+
+**Why does Lace need a local proof server but 1AM doesn't?**
+1AM implements `getProvingProvider()` (in-browser proving); Lace doesn't, so
+Zekura falls back to a local proof server (`NEXT_PUBLIC_PROOF_SERVER_URL`,
+default `http://127.0.0.1:6300`) for Lace sessions only.
+
+**Does Zekura ever see my private keys or hold my funds?**
+No. Zekura is non-custodial — wallets sign and submit their own
+`createOrder`/`cancelOrder` transactions directly. The Matcher only submits
+`settle()` for pairs it has independently verified against the chain, and
+never holds an order's `ownerSecretKey`.
+
+**What exactly stays private, and what becomes public?**
+See ["Privacy Model"](#privacy-model) — in short, only a commitment and a
+lifecycle state are ever on-chain; asset, amount, side, price, owner, and
+expiry never are.
+
+**Can the Matcher cancel my order?**
+No — structurally cannot. `cancelOrder` requires the owner's
+`ownerSecretKey` witness, which the Matcher is never disclosed. `DELETE
+/orders/:id` on the Matcher only removes an order from its own book/database;
+it never submits an on-chain `cancelOrder()`. See ["Security"](#security).
+
+**How does settlement work without revealing order details?**
+`settle(buyOrderId, sellOrderId)` takes no order data as arguments — it
+re-derives both orders' private details from witnesses supplied by the
+caller and proves, in zero knowledge, that they satisfy the crossing rules
+(same asset, same amount, `buyPrice >= sellPrice`, distinct owners), without
+disclosing those values on-chain.
+
+**Which networks does Zekura support?**
+Preview and Preprod, both public Midnight testnets, plus a local devnet via
+Docker Compose. Preprod is the default. Mainnet is out of scope today — see
+["Roadmap"](#roadmap).
+
+**Is there partial fill support?**
+No — `settle()` requires exact amount equality between the buy and sell
+order; the matching engine skips any candidate whose amount doesn't exactly
+match (see [`matcher/MATCHER.md`](./matcher/MATCHER.md)).
+
+**Has this been audited?**
+Yes — see [`AUDIT.md`](./AUDIT.md). One P0 finding (an authorization bypass
+in `cancelOrder`) was found and fixed; production readiness score 10/10
+after a live end-to-end verification pass on Preprod.
+
+## License
+
+[MIT](./LICENSE) © 2026 Zekura.
+
+## Acknowledgements
+
+- **[Midnight Network](https://docs.midnight.network/)** — the data-protection
+  blockchain, Compact language, and `midnight-js-*`/wallet SDK stack Zekura
+  is built entirely on.
+- **Open source libraries** that make up the stack: [Fastify](https://fastify.dev/),
+  [better-sqlite3](https://github.com/WiseLibs/better-sqlite3), [Zod](https://zod.dev/),
+  [pino](https://getpino.io/), [Next.js](https://nextjs.org/), [React](https://react.dev/),
+  [Tailwind CSS](https://tailwindcss.com/), [shadcn/ui](https://ui.shadcn.com/),
+  [Radix UI](https://www.radix-ui.com/), [Vitest](https://vitest.dev/), and
+  the rest listed in [`package.json`](./package.json), [`matcher/package.json`](./matcher/package.json),
+  and [`web/package.json`](./web/package.json).
+- **Contributors** — see the [contributor graph](https://github.com/wolf1276/ZEKURA/graphs/contributors).
