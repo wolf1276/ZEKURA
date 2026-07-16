@@ -87,6 +87,40 @@ export type OrderTimelineStage =
   | "SETTLED"
   | "COMPLETED";
 
+/** Who actually supplied the counterparty side of a fill. */
+export type MatchedWith = "user" | "protocol";
+
+export interface TreasuryLiquidity {
+  assetKey: string;
+  balance: string;
+  reserved: string;
+  available: string;
+}
+
+export type TreasuryEventKind = "DEPOSIT" | "WITHDRAW" | "RESERVE" | "RELEASE" | "EXECUTE";
+
+export interface TreasuryEvent {
+  id: string;
+  kind: TreasuryEventKind;
+  assetKey: string;
+  amount: string;
+  actor: string;
+  txId: string | null;
+  createdAt: number;
+}
+
+export type PpmRiskStatus = "empty" | "healthy" | "elevated" | "critical";
+
+export interface PpmStatus extends TreasuryLiquidity {
+  riskStatus: PpmRiskStatus;
+  config: {
+    baseSpreadBps: number;
+    maxExposureFraction: number;
+    inventorySkewBps: number;
+    quoteTtlSeconds: string;
+  };
+}
+
 export interface MarketInsights {
   suggestedBuy: { low: number; high: number };
   suggestedSell: { low: number; high: number };

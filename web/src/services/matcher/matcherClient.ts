@@ -174,8 +174,13 @@ class MatcherClient {
         this.markStatus(message.payload.match.sellOrderId, "SETTLING");
         break;
       case "order.filled":
-        this.markStatus(message.payload.match.buyOrderId, "FILLED");
-        this.markStatus(message.payload.match.sellOrderId, "FILLED");
+        if ("order" in message.payload) {
+          // Protocol-liquidity fill — a single order, not a buy/sell pair.
+          this.upsertOrder(toOrder(message.payload.order));
+        } else {
+          this.markStatus(message.payload.match.buyOrderId, "FILLED");
+          this.markStatus(message.payload.match.sellOrderId, "FILLED");
+        }
         break;
       case "order.failed":
         this.markStatus(message.payload.match.buyOrderId, "FAILED");
@@ -191,19 +196,36 @@ class MatcherClient {
     kind: ActivityKind | undefined,
   ) {
     if (!kind) return;
-    if (
-      message.type === "order.matched" ||
-      message.type === "order.settling" ||
-      message.type === "order.filled" ||
-      message.type === "order.failed"
-    ) {
-      const match = "match" in message.payload ? message.payload.match : message.payload;
-      this.emitActivity(kind, match.buyOrderId, match.asset, match.price, match.amount);
-      this.emitActivity(kind, match.sellOrderId, match.asset, match.price, match.amount);
-      return;
+    switch (message.type) {
+      case "order.matched":
+      case "order.settling":
+      case "order.failed": {
+        const match = "match" in message.payload ? message.payload.match : message.payload;
+        this.emitActivity(kind, match.buyOrderId, match.asset, match.price, match.amount);
+        this.emitActivity(kind, match.sellOrderId, match.asset, match.price, match.amount);
+        return;
+      }
+      case "order.filled": {
+        if ("order" in message.payload) {
+          const { order, price, amount } = message.payload;
+          this.emitActivity(kind, order.id, order.asset, price, amount);
+          return;
+        }
+        const match = message.payload.match;
+        this.emitActivity(kind, match.buyOrderId, match.asset, match.price, match.amount);
+        this.emitActivity(kind, match.sellOrderId, match.asset, match.price, match.amount);
+        return;
+      }
+      case "order.created":
+      case "order.cancelled":
+      case "order.expired": {
+        const order = message.payload;
+        this.emitActivity(kind, order.id, order.asset, order.price, order.amount);
+        return;
+      }
+      default:
+        return;
     }
-    const order = message.payload;
-    this.emitActivity(kind, order.id, order.asset, order.price, order.amount);
   }
 
   private markStatus(orderId: string, status: OrderStatus) {

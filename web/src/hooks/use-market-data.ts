@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getOrderBook, getStats, getTrades } from "@/services/matcher/api";
+import { getOrderBook, getPpmStatus, getStats, getTrades, getTreasuryBalance } from "@/services/matcher/api";
 import { matcher } from "@/services/matcher/matcherClient";
 import type { AssetPair } from "@/lib/types";
 import type {
@@ -9,22 +9,35 @@ import type {
   MatcherOrderBookLevel,
   MatcherOrderBookSnapshot,
   MatcherOrderSide,
+  MatcherPpmStatus,
   MatcherStats,
   MatcherTrade,
+  MatcherTreasuryBalance,
 } from "@/types/matcher";
 
 const MAX_TRADES = 50;
-// Both act as a reconciliation safety net against a missed WS message (e.g.
-// a brief disconnect — matcherClient reconnects on its own timer, but a
-// message that arrived while offline is simply gone) rather than the
-// primary update path, which is the live order.* events below.
+// All three act as a reconciliation safety net against a missed WS message
+// (e.g. a brief disconnect — matcherClient reconnects on its own timer, but
+// a message that arrived while offline is simply gone) rather than the
+// primary update path, which is the live order.*/treasury.* events below.
 const STATS_REFRESH_MS = 30_000;
 const ORDERBOOK_REFRESH_MS = 30_000;
+const TREASURY_REFRESH_MS = 30_000;
 
+/**
+ * The single source of market data for one asset pair — orderbook, trade
+ * tape, rolling stats, and Treasury/PPM liquidity all live in one hook so
+ * every consumer (Trade page, Overview's Protocol Liquidity card, Settings'
+ * Developer section, the Treasury page) reads the same snapshot rather than
+ * independently re-fetching pieces of it. Mirrors the Matcher's own
+ * MarketDataService consolidation on the backend.
+ */
 export interface MarketDataState {
   orderBook: MatcherOrderBookSnapshot | null;
   trades: MatcherTrade[];
   stats: MatcherStats | null;
+  treasury: MatcherTreasuryBalance | null;
+  ppmStatus: MatcherPpmStatus | null;
   loading: boolean;
   error: string | null;
 }
@@ -106,6 +119,8 @@ export function useMarketData(pair: AssetPair): MarketDataState {
     orderBook: null,
     trades: [],
     stats: null,
+    treasury: null,
+    ppmStatus: null,
     loading: true,
     error: null,
   });
@@ -114,7 +129,7 @@ export function useMarketData(pair: AssetPair): MarketDataState {
     const asset: MatcherEitherAsset = { isLeft: true, left: pair.baseAssetId, right: pair.quoteAssetId };
     let cancelled = false;
 
-    setState({ orderBook: null, trades: [], stats: null, loading: true, error: null });
+    setState({ orderBook: null, trades: [], stats: null, treasury: null, ppmStatus: null, loading: true, error: null });
 
     async function loadSnapshot() {
       try {
@@ -124,7 +139,7 @@ export function useMarketData(pair: AssetPair): MarketDataState {
           getStats(asset),
         ]);
         if (cancelled) return;
-        setState({ orderBook, trades: tradesResponse.trades, stats, loading: false, error: null });
+        setState((prev) => ({ ...prev, orderBook, trades: tradesResponse.trades, stats, loading: false, error: null }));
       } catch (err) {
         if (cancelled) return;
         setState((prev) => ({
@@ -132,6 +147,20 @@ export function useMarketData(pair: AssetPair): MarketDataState {
           loading: false,
           error: err instanceof Error ? err.message : "Failed to load market data",
         }));
+      }
+      // Treasury/PPM data is fetched separately and never fails the whole
+      // snapshot — an order book/trades/stats hiccup and a Treasury hiccup
+      // are independent failure modes, and this hook's `loading`/`error`
+      // fields are about the former (what the trading UI needs to function).
+      void refreshTreasury();
+    }
+
+    async function refreshTreasury() {
+      try {
+        const [treasury, ppmStatus] = await Promise.all([getTreasuryBalance(asset), getPpmStatus(asset)]);
+        if (!cancelled) setState((prev) => ({ ...prev, treasury, ppmStatus }));
+      } catch {
+        // Transient — the next scheduled refresh retries.
       }
     }
 
@@ -190,6 +219,38 @@ export function useMarketData(pair: AssetPair): MarketDataState {
           });
           return;
         }
+        case "order.filled": {
+          // The user-match variant is already covered by order.matched above
+          // (this event only additionally confirms on-chain settlement — no
+          // new orderbook/stats delta to apply). The protocol variant is a
+          // brand-new fill this hook hasn't seen yet: refresh the order book
+          // (treasury.reserved already triggers the Treasury-side refresh
+          // below) and append it to the trade tape.
+          if (!("order" in message.payload)) return;
+          if (!sameAsset(message.payload.order.asset, asset)) return;
+          void refreshOrderBook();
+          const { order, price, amount, txId } = message.payload;
+          setState((prev) => {
+            const trade: MatcherTrade = { id: txId, asset: order.asset, price, amount, matchedAt: Date.now() };
+            const trades = [trade, ...prev.trades.filter((t) => t.id !== trade.id)].slice(0, MAX_TRADES);
+            const stats = prev.stats ? applyTradeToStats(prev.stats, trade) : prev.stats;
+            return { ...prev, trades, stats };
+          });
+          return;
+        }
+        // Treasury/PPM liquidity changed — cheap to just re-fetch rather
+        // than reconcile a delta client-side, and these are rare relative
+        // to order.* events. Not asset-filtered: these events carry the
+        // on-chain deriveAssetKey(...) key, not this hook's off-chain
+        // {isLeft,left,right} shape, and computing that mapping in the
+        // browser isn't worth it for an occasional extra fetch.
+        case "treasury.deposited":
+        case "treasury.withdrawn":
+        case "treasury.reserved":
+        case "treasury.released": {
+          void refreshTreasury();
+          return;
+        }
         default:
           return;
       }
@@ -197,12 +258,14 @@ export function useMarketData(pair: AssetPair): MarketDataState {
 
     const statsInterval = window.setInterval(() => void refreshStats(), STATS_REFRESH_MS);
     const orderBookInterval = window.setInterval(() => void refreshOrderBook(), ORDERBOOK_REFRESH_MS);
+    const treasuryInterval = window.setInterval(() => void refreshTreasury(), TREASURY_REFRESH_MS);
 
     return () => {
       cancelled = true;
       unsubscribe();
       window.clearInterval(statsInterval);
       window.clearInterval(orderBookInterval);
+      window.clearInterval(treasuryInterval);
     };
   }, [pair.baseAssetId, pair.quoteAssetId]);
 

@@ -70,6 +70,11 @@ const exchangeWitnesses: ExchangeWitnesses<undefined> = {
       "ownerSecretKey witness not implemented in the browser client — createOrder never invokes it.",
     );
   },
+  adminSecretKey: () => {
+    throw new Error(
+      "adminSecretKey witness not implemented in the browser client — createOrder never invokes it (Treasury admin actions are submitted by the Matcher, never the browser — see matcher/src/api/admin.ts).",
+    );
+  },
 };
 
 const compiledExchangeContractBase = CompiledContract.make<ExchangeContractType<undefined>>(

@@ -6,14 +6,23 @@
  * can call it.
  */
 import type {
+  AdminChallengeRequest,
+  AdminChallengeResponse,
+  AdminDepositRequest,
+  AdminTxResponse,
+  AdminWithdrawRequest,
   CreateOrderRequest,
   CreateOrderResponse,
   MatcherEitherAsset,
   MatcherErrorBody,
   MatcherOrder,
   MatcherOrderBookSnapshot,
+  MatcherPpmStatus,
   MatcherStats,
   MatcherTrade,
+  MatcherTreasuryBalance,
+  MatcherTreasuryEventKind,
+  MatcherTreasuryHistoryResponse,
 } from "@/types/matcher";
 
 export class MatcherApiError extends Error {
@@ -84,4 +93,68 @@ export async function getStats(asset: MatcherEitherAsset, windowMs?: number): Pr
   if (windowMs !== undefined) params.set("windowMs", String(windowMs));
   const response = await fetch(`/api/matcher/stats?${params}`);
   return parseJsonOrThrow<MatcherStats>(response);
+}
+
+// ─── Treasury / PPM / Admin ─────────────────────────────────────────────
+//
+// Treasury/PPM balance routes are queryable two ways (see the Matcher's
+// treasuryAssetQuerySchema): by the raw on-chain assetKey directly — what
+// depositTreasury/withdrawTreasury actually key their ledger Maps by, e.g.
+// the real native tNIGHT token type (lib/nativeAsset.ts) — or by an
+// order-shaped {isLeft,left,right} asset, hashed server-side via
+// deriveAssetKey. These are NOT the same key. Admin funding always uses the
+// raw form; a specific trading pair's PPM liquidity uses the asset form.
+
+export async function getTreasuryBalanceByKey(assetKey: string): Promise<MatcherTreasuryBalance> {
+  const response = await fetch(`/api/matcher/treasury/balance?${new URLSearchParams({ assetKey })}`);
+  return parseJsonOrThrow<MatcherTreasuryBalance>(response);
+}
+
+export async function getTreasuryBalance(asset: MatcherEitherAsset): Promise<MatcherTreasuryBalance> {
+  const response = await fetch(`/api/matcher/treasury/balance?${assetParams(asset)}`);
+  return parseJsonOrThrow<MatcherTreasuryBalance>(response);
+}
+
+export async function getTreasuryHistory(limit = 50, kind?: MatcherTreasuryEventKind): Promise<MatcherTreasuryHistoryResponse> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (kind) params.set("kind", kind);
+  const response = await fetch(`/api/matcher/treasury/history?${params}`);
+  return parseJsonOrThrow<MatcherTreasuryHistoryResponse>(response);
+}
+
+export async function getPpmStatusByKey(assetKey: string): Promise<MatcherPpmStatus> {
+  const response = await fetch(`/api/matcher/ppm/status?${new URLSearchParams({ assetKey })}`);
+  return parseJsonOrThrow<MatcherPpmStatus>(response);
+}
+
+export async function getPpmStatus(asset: MatcherEitherAsset): Promise<MatcherPpmStatus> {
+  const response = await fetch(`/api/matcher/ppm/status?${assetParams(asset)}`);
+  return parseJsonOrThrow<MatcherPpmStatus>(response);
+}
+
+export async function requestAdminChallenge(request: AdminChallengeRequest): Promise<AdminChallengeResponse> {
+  const response = await fetch("/api/matcher/admin/challenge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  return parseJsonOrThrow<AdminChallengeResponse>(response);
+}
+
+export async function depositTreasury(request: AdminDepositRequest): Promise<AdminTxResponse> {
+  const response = await fetch("/api/matcher/admin/treasury/deposit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  return parseJsonOrThrow<AdminTxResponse>(response);
+}
+
+export async function withdrawTreasury(request: AdminWithdrawRequest): Promise<AdminTxResponse> {
+  const response = await fetch("/api/matcher/admin/treasury/withdraw", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  return parseJsonOrThrow<AdminTxResponse>(response);
 }

@@ -33,6 +33,8 @@ export interface MatcherOrder {
   status: MatcherOrderStatus;
   createdAt: number;
   expiresAt: string;
+  /** Real unshielded UserAddress (hex), opt-in — required only for this order to be eligible for a protocol-liquidity fill. null means user-vs-user matching only. */
+  payoutAddress: string | null;
 }
 
 export interface MatcherMatch {
@@ -56,11 +58,22 @@ export interface CreateOrderRequest {
   /** The order's blinding factor — see matcher/API.md and ARCHITECTURE.md's security model. */
   signature: string;
   expiresAt: string;
+  /** See MatcherOrder.payoutAddress. */
+  payoutAddress?: string | null;
+}
+
+/** A fill against protocol liquidity instead of a second user order. */
+export interface MatcherProtocolFill {
+  quoteId: string;
+  price: string;
+  amount: string;
+  txId: string;
 }
 
 export interface CreateOrderResponse {
   order: MatcherOrder;
   match: MatcherMatch | null;
+  protocolFill: MatcherProtocolFill | null;
 }
 
 export type MatcherErrorCode =
@@ -115,19 +128,111 @@ export interface MatcherStats {
   changePct: number | null;
 }
 
+/**
+ * order.filled carries one of two shapes depending on who supplied the
+ * counterparty liquidity — a second user order (settled asynchronously by
+ * SettlementService) or the Treasury/PPM (settled synchronously within the
+ * same request that submitted the order). Distinguish by the presence of
+ * `matchedWith` — see components/trade's "Matched With" badge.
+ */
+export type MatcherOrderFilledPayload =
+  | { match: MatcherMatch; txId: string | null; matchedWith?: undefined }
+  | {
+      order: MatcherOrder;
+      matchedWith: "protocol";
+      quoteId: string;
+      price: string;
+      amount: string;
+      txId: string;
+    };
+
 export type MatcherWsMessage =
   | { type: "order.created"; payload: MatcherOrder; timestamp: number }
   | { type: "order.matched"; payload: MatcherMatch; timestamp: number }
   | { type: "order.settling"; payload: { match: MatcherMatch }; timestamp: number }
-  | {
-      type: "order.filled";
-      payload: { match: MatcherMatch; txId: string | null };
-      timestamp: number;
-    }
+  | { type: "order.filled"; payload: MatcherOrderFilledPayload; timestamp: number }
   | {
       type: "order.failed";
       payload: { match: MatcherMatch; reason: string };
       timestamp: number;
     }
   | { type: "order.cancelled"; payload: MatcherOrder; timestamp: number }
-  | { type: "order.expired"; payload: MatcherOrder; timestamp: number };
+  | { type: "order.expired"; payload: MatcherOrder; timestamp: number }
+  | { type: "treasury.deposited"; payload: { assetKey: string; amount: string; txId: string }; timestamp: number }
+  | { type: "treasury.withdrawn"; payload: { assetKey: string; amount: string; txId: string }; timestamp: number }
+  | {
+      type: "treasury.reserved";
+      payload: { quoteId: string; assetKey: string; amount: string; price: string; expiresAt: string };
+      timestamp: number;
+    }
+  | { type: "treasury.released"; payload: { quoteId: string; assetKey: string; amount: string }; timestamp: number };
+
+// ─── Treasury / PPM / Admin ─────────────────────────────────────────────
+
+export interface MatcherTreasuryBalance {
+  assetKey: string;
+  balance: string;
+  reserved: string;
+  available: string;
+}
+
+export type MatcherTreasuryEventKind = "DEPOSIT" | "WITHDRAW" | "RESERVE" | "RELEASE" | "EXECUTE";
+
+export interface MatcherTreasuryEvent {
+  id: string;
+  kind: MatcherTreasuryEventKind;
+  assetKey: string;
+  amount: string;
+  /** deriveAdminId(...) for DEPOSIT/WITHDRAW, quoteId for RESERVE/RELEASE/EXECUTE. */
+  actor: string;
+  txId: string | null;
+  createdAt: number;
+}
+
+export interface MatcherTreasuryHistoryResponse {
+  events: MatcherTreasuryEvent[];
+}
+
+export type MatcherPpmRiskStatus = "empty" | "healthy" | "elevated" | "critical";
+
+export interface MatcherPpmStatus extends MatcherTreasuryBalance {
+  riskStatus: MatcherPpmRiskStatus;
+  config: {
+    baseSpreadBps: number;
+    maxExposureFraction: number;
+    inventorySkewBps: number;
+    quoteTtlSeconds: string;
+  };
+}
+
+export interface AdminChallengeRequest {
+  address: string;
+}
+
+export interface AdminChallengeResponse {
+  nonce: string;
+  expiresAt: number;
+}
+
+export interface AdminAuthPayload {
+  address: string;
+  publicKey: string;
+  signature: string;
+}
+
+export interface AdminDepositRequest {
+  auth: AdminAuthPayload;
+  assetKey: string;
+  amount: string;
+}
+
+export interface AdminWithdrawRequest {
+  auth: AdminAuthPayload;
+  assetKey: string;
+  amount: string;
+  recipientUserAddress: string;
+}
+
+export interface AdminTxResponse {
+  txId: string;
+}
