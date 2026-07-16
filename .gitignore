@@ -67,3 +67,4 @@ matcher/data/
 
 # Local devnet node database (container-managed volume mirror)
 midnight-level-db/
+.vercel
