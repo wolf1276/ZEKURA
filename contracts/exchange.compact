@@ -569,18 +569,46 @@ export circuit settleWithProtocol(
   const reserved = reservedOf(r.assetKey);
   treasuryReserved.insert(r.assetKey, disclose((reserved - r.amount) as Uint<128>));
 
+  // The NIGHT (native token) payment leg. Both branches move a real NIGHT
+  // payment equal to (reserved asset amount * PPM quoted price) — using the
+  // reservation's own already-public `amount`/`price`, never the order's
+  // private `details.amount`/`details.price`, so nothing confidential leaks.
+  // nativeToken() is the all-zeros token type (see the Private-Party
+  // tutorial's receiveUnshielded(nativeToken(), ...) pattern); it can never
+  // collide with a traded asset's deriveAssetKey() hash, so NIGHT liquidity
+  // lives in the same treasuryBalances map under its own key.
+  // r.amount and r.price are each Uint<128>, so their product's static Uint
+  // bound (Uint<256>) exceeds the largest representable Uint — the compiler
+  // requires an operand be cast to Field first (multiply mod field), then the
+  // `as Uint<128>` downcast runtime-checks the product actually fits 128 bits
+  // (a fill whose NIGHT payment can't be represented is rejected outright).
+  const paymentAmount = disclose(((r.amount as Field) * r.price) as Uint<128>);
+  const nightKey = nativeToken();
+
   const current = balanceOf(r.assetKey);
   if (disclose(details.isBuy)) {
-    // Protocol is the seller: it pays the asset out to the buyer, balance
-    // goes down.
+    // Protocol is the seller: it pays the traded asset out to the buyer
+    // (asset balance down) and receives the NIGHT payment from the buyer —
+    // who is now the transaction submitter (see the architectural
+    // consequence in the spec) — so NIGHT balance goes up.
     assert(r.amount <= current, "Protocol liquidity unavailable");
     treasuryBalances.insert(r.assetKey, disclose((current - r.amount) as Uint<128>));
     sendUnshielded(r.assetKey, r.amount, disclose(recipient));
+
+    const nightBalance = balanceOf(nightKey);
+    receiveUnshielded(nightKey, paymentAmount);
+    treasuryBalances.insert(nightKey, disclose((nightBalance + paymentAmount) as Uint<128>));
   } else {
-    // Protocol is the buyer: it receives the asset from the seller, balance
-    // goes up.
+    // Protocol is the buyer: it receives the traded asset from the seller
+    // (asset balance up) and pays the NIGHT payment out to the seller
+    // (NIGHT balance down), so it must actually hold enough NIGHT liquidity.
     receiveUnshielded(r.assetKey, r.amount);
     treasuryBalances.insert(r.assetKey, disclose((current + r.amount) as Uint<128>));
+
+    const nightBalance = balanceOf(nightKey);
+    assert(paymentAmount <= nightBalance, "Insufficient protocol NIGHT liquidity");
+    treasuryBalances.insert(nightKey, disclose((nightBalance - paymentAmount) as Uint<128>));
+    sendUnshielded(nightKey, paymentAmount, disclose(recipient));
   }
 
   recordTreasuryTx(TxKind.EXECUTE, r.assetKey, r.amount, qid);
