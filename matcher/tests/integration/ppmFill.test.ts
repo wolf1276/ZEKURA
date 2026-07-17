@@ -10,7 +10,14 @@ import { PriceTimePriorityStrategy } from '../../src/matcher/MatchingStrategy.js
 import { OrderBook } from '../../src/orderbook/OrderBook.js';
 import { PPMService } from '../../src/ppm/PPMService.js';
 import { PricingEngine, DEFAULT_PRICING_CONFIG } from '../../src/ppm/PricingEngine.js';
-import { TreasuryClient, type OnChainTreasuryReader, type PpmCircuitCaller, type TreasuryLiquidity } from '../../src/ppm/TreasuryClient.js';
+import {
+  TreasuryClient,
+  type OnChainReservationReader,
+  type OnChainReservationState,
+  type OnChainTreasuryReader,
+  type PpmCircuitCaller,
+  type TreasuryLiquidity,
+} from '../../src/ppm/TreasuryClient.js';
 import { MarketDataService } from '../../src/services/MarketDataService.js';
 import { OrderService } from '../../src/services/OrderService.js';
 import { createLogger } from '../../src/utils/logger.js';
@@ -58,11 +65,15 @@ function buildInput(opts: DraftOpts): CreateOrderInput {
 
 /**
  * Wires OrderService + PPMService together for real (no mocks between them)
- * — only the on-chain seam (PpmCircuitCaller/OnChainTreasuryReader) is
- * faked, exactly as src/index.ts would inject real ones. `liquidity`
- * controls what the fake Treasury reports available.
+ * — only the on-chain seam (PpmCircuitCaller / OnChainTreasuryReader /
+ * OnChainReservationReader / OnChainOrderReader) is faked, exactly as
+ * src/index.ts injects real ones. `liquidity` controls what the fake
+ * Treasury reports available (it reports the same for the traded asset and
+ * for NIGHT, since a single reader backs both). `settleOnChain` simulates
+ * the user's OWN wallet submitting settleWithProtocol — the Matcher never
+ * does this itself anymore.
  */
-function buildSystem(liquidity: TreasuryLiquidity) {
+function buildSystem(liquidity: TreasuryLiquidity, now: () => number = () => Date.now()) {
   const db = openDatabase(':memory:');
   const orderRepo = new OrderRepository(db);
   const matchRepo = new MatchRepository(db);
@@ -78,18 +89,32 @@ function buildSystem(liquidity: TreasuryLiquidity) {
     },
   };
 
+  const reservationRegistry = new Map<string, OnChainReservationState>();
+  const reservationReader: OnChainReservationReader = {
+    async getReservationState(quoteId) {
+      return reservationRegistry.get(quoteId) ?? 'NOT_FOUND';
+    },
+  };
+
   const events: Array<[MatcherEventType, unknown]> = [];
   const broadcaster: Broadcaster = { broadcast: (type, payload) => events.push([type, payload]) };
 
   const ppmCaller: PpmCircuitCaller = {
-    reserveLiquidity: async () => ({ public: { txId: 'reserve-tx' } }),
-    releaseLiquidity: async () => ({ public: { txId: 'release-tx' } }),
-    releaseExpiredLiquidity: async () => ({ public: { txId: 'expire-tx' } }),
-    settleWithProtocol: async (orderId) => {
-      const id = Buffer.from(orderId).toString('hex');
-      onChainRegistry.set(id, { ...onChainRegistry.get(id)!, state: 'FILLED' });
-      return { public: { txId: 'settle-tx' } };
+    reserveLiquidity: async (quoteId) => {
+      reservationRegistry.set(Buffer.from(quoteId).toString('hex'), 'OPEN');
+      return { public: { txId: 'reserve-tx' } };
     },
+    releaseLiquidity: async (quoteId) => {
+      reservationRegistry.set(Buffer.from(quoteId).toString('hex'), 'RELEASED');
+      return { public: { txId: 'release-tx' } };
+    },
+    releaseExpiredLiquidity: async (quoteId) => {
+      reservationRegistry.set(Buffer.from(quoteId).toString('hex'), 'RELEASED');
+      return { public: { txId: 'expire-tx' } };
+    },
+    // The Matcher no longer calls this — kept only so the interface is
+    // satisfied; a test asserting it is never invoked would use a spy.
+    settleWithProtocol: async () => ({ public: { txId: 'settle-tx' } }),
     depositTreasury: async () => ({ public: { txId: 'deposit-tx' } }),
     withdrawTreasury: async () => ({ public: { txId: 'withdraw-tx' } }),
   };
@@ -115,6 +140,7 @@ function buildSystem(liquidity: TreasuryLiquidity) {
     logger,
     toOnChainAssetKey: () => ON_CHAIN_ASSET_KEY,
     statsWindowMs: 60_000,
+    now,
   });
 
   const orderService = new OrderService({
@@ -123,13 +149,36 @@ function buildSystem(liquidity: TreasuryLiquidity) {
       throw new Error('no user-user match expected in this test suite');
     },
     ppmService,
+    reservationRepo,
+    reservationReader,
+    now,
   });
   orderServiceRef = orderService;
 
-  return { orderRepo, matchRepo, reservationRepo, treasuryRepo, onChainRegistry, events, orderService };
+  /** Simulates the order owner's own wallet submitting settleWithProtocol: the order flips FILLED and the reservation flips EXECUTED on-chain. */
+  const settleOnChain = (orderId: string, quoteId: string): void => {
+    onChainRegistry.set(orderId, { ...onChainRegistry.get(orderId)!, state: 'FILLED' });
+    reservationRegistry.set(quoteId, 'EXECUTED');
+  };
+
+  return { orderRepo, matchRepo, reservationRepo, treasuryRepo, onChainRegistry, reservationRegistry, events, orderService, ppmService, settleOnChain };
 }
 
-describe('PPM fill integration', () => {
+/**
+ * Seeds a genuine, independent reference price (a prior trade at 1000) so
+ * MarketDataService.referencePrice has something to quote from — see the
+ * doc comment on referencePrice for why it never falls back to a one-sided
+ * orderbook level (the incoming order would otherwise be its own reference).
+ */
+function seedReferencePrice(orderRepo: OrderRepository, matchRepo: MatchRepository): void {
+  const priorBuy = { id: hexFill('f1'), asset: ASSET, side: 'BUY' as const, price: 1_000n, amount: 10n, commitment: hexFill('c1'), ownerId: hexFill('o1'), signature: hexFill('s1'), status: 'FILLED' as const, createdAt: Date.now(), expiresAt: 9_999_999_999n, payoutAddress: null };
+  const priorSell = { ...priorBuy, id: hexFill('f2'), side: 'SELL' as const, ownerId: hexFill('o2') };
+  orderRepo.insert(priorBuy);
+  orderRepo.insert(priorSell);
+  matchRepo.insert({ id: 'seed-match', buyOrderId: priorBuy.id, sellOrderId: priorSell.id, asset: ASSET, price: 1_000n, amount: 10n, matchedAt: Date.now() });
+}
+
+describe('PPM fill integration (pending-then-reconcile)', () => {
   it('No Liquidity Flow: an order with no user counterparty and an empty Treasury rests OPEN, unfilled', async () => {
     const { orderRepo, onChainRegistry, orderService, events } = buildSystem({ balance: 0n, reserved: 0n, available: 0n });
 
@@ -142,28 +191,19 @@ describe('PPM fill integration', () => {
     if (!result.ok) throw new Error('unreachable');
     expect(result.match).toBeNull();
     expect(result.protocolFill).toBeNull();
+    expect(result.pendingProtocolQuote).toBeNull();
     expect(result.order.status).toBe('OPEN');
     expect(orderRepo.findById(input.id)?.status).toBe('OPEN');
-    expect(events.map(([type]) => type)).toEqual(['order.created']); // no order.filled — it just rests
+    expect(events.map(([type]) => type)).toEqual(['order.created']); // no reservation, no fill
   });
 
-  it('PPM Match: an order with no user counterparty but sufficient Treasury liquidity is filled by the protocol', async () => {
+  it('BUY fill is now PENDING, not immediate: the PPM reserves and returns a pending quote; the order stays OPEN until the buyer settles', async () => {
     const { orderRepo, matchRepo, reservationRepo, treasuryRepo, onChainRegistry, orderService, events } = buildSystem({
       balance: 10_000n,
       reserved: 0n,
       available: 10_000n,
     });
-
-    // Seeds a genuine, independent reference price (a prior trade at 1000)
-    // — MarketDataService.referencePrice deliberately never falls back to a
-    // one-sided orderbook level (see its doc comment), since the incoming
-    // order below would otherwise be resting in the book on its own side
-    // and become a circular "reference" for pricing itself.
-    const priorBuy = { id: hexFill('f1'), asset: ASSET, side: 'BUY' as const, price: 1_000n, amount: 10n, commitment: hexFill('c1'), ownerId: hexFill('o1'), signature: hexFill('s1'), status: 'FILLED' as const, createdAt: Date.now(), expiresAt: 9_999_999_999n, payoutAddress: null };
-    const priorSell = { ...priorBuy, id: hexFill('f2'), side: 'SELL' as const, ownerId: hexFill('o2') };
-    orderRepo.insert(priorBuy);
-    orderRepo.insert(priorSell);
-    matchRepo.insert({ id: 'seed-match', buyOrderId: priorBuy.id, sellOrderId: priorSell.id, asset: ASSET, price: 1_000n, amount: 10n, matchedAt: Date.now() });
+    seedReferencePrice(orderRepo, matchRepo);
 
     const input = buildInput({ id: hexFill('02'), side: 'BUY', price: 1_100n, amount: 100n, ownerId: hexFill('bb'), signature: hexFill('dd'), payoutAddress: hexFill('99') });
     onChainRegistry.set(input.id, { state: 'OPEN', commitment: input.commitment });
@@ -173,20 +213,137 @@ describe('PPM fill integration', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
     expect(result.match).toBeNull();
-    expect(result.protocolFill).not.toBeNull();
-    expect(result.protocolFill?.price).toBe(1_010n); // 1000 reference + 1% base spread
-    expect(result.order.status).toBe('FILLED');
+    expect(result.protocolFill).toBeNull(); // never auto-filled anymore
+    expect(result.pendingProtocolQuote).not.toBeNull();
+    expect(result.pendingProtocolQuote?.price).toBe(1_010n); // 1000 reference + 1% base spread
+    expect(result.order.status).toBe('OPEN'); // rests OPEN, waiting for the buyer's wallet
 
-    // Settlement Updates: the order's off-chain record reflects the fill.
+    // A reservation is OPEN (not EXECUTED); only the RESERVE leg is recorded.
+    const reservation = reservationRepo.findById(result.pendingProtocolQuote!.quoteId);
+    expect(reservation?.state).toBe('OPEN');
+    expect(treasuryRepo.listRecent(10).map((e) => e.kind)).toEqual(['RESERVE']);
+    // The submitting session gets the quote in the HTTP response; other
+    // sessions get order.ppm_quote_ready.
+    expect(events.map(([type]) => type)).toEqual(['order.created', 'treasury.reserved', 'order.ppm_quote_ready']);
+  });
+
+  it('SELL fill happy path: reserve pending, then reconcile to FILLED after the seller settles on-chain', async () => {
+    const { orderRepo, matchRepo, reservationRepo, treasuryRepo, onChainRegistry, orderService, events, settleOnChain } = buildSystem({
+      balance: 500_000n,
+      reserved: 0n,
+      available: 500_000n,
+    });
+    seedReferencePrice(orderRepo, matchRepo);
+
+    // SELL quote = 1000 - 1% = 990; crosses since limit 500 <= 990.
+    const input = buildInput({ id: hexFill('03'), side: 'SELL', price: 500n, amount: 100n, ownerId: hexFill('bb'), signature: hexFill('dd') });
+    onChainRegistry.set(input.id, { state: 'OPEN', commitment: input.commitment });
+
+    const result = await orderService.submitOrder(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.pendingProtocolQuote).not.toBeNull();
+    expect(result.pendingProtocolQuote?.price).toBe(990n);
+    expect(result.order.status).toBe('OPEN');
+    const quoteId = result.pendingProtocolQuote!.quoteId;
+
+    // The seller's own wallet submits settleWithProtocol.
+    settleOnChain(input.id, quoteId);
+
+    // A reconciled read materializes the fill locally.
+    const reconciled = await orderService.getOrderReconciled(input.id);
+    expect(reconciled?.status).toBe('FILLED');
     expect(orderRepo.findById(input.id)?.status).toBe('FILLED');
-    // Treasury Updates: a reservation was opened and executed, and both
-    // legs are recorded in the local Treasury history mirror.
-    const reservation = reservationRepo.findById(result.protocolFill!.quoteId);
-    expect(reservation?.state).toBe('EXECUTED');
+    expect(reservationRepo.findById(quoteId)?.state).toBe('EXECUTED');
     expect(treasuryRepo.listRecent(10).map((e) => e.kind)).toEqual(['EXECUTE', 'RESERVE']);
-    // Frontend Updates: broadcasts carry enough for a "Matched With: Protocol Liquidity" badge.
-    expect(events.map(([type]) => type)).toEqual(['order.created', 'treasury.reserved', 'order.filled']);
+
     const filledEvent = events.find(([type]) => type === 'order.filled')?.[1] as { matchedWith: string };
     expect(filledEvent.matchedWith).toBe('protocol');
+  });
+
+  it('insufficient NIGHT liquidity for a SELL: the order rests OPEN with no reservation', async () => {
+    // available covers the asset quote + risk limit, but not the NIGHT payment
+    // (100 * 990 = 99_000).
+    const { orderRepo, matchRepo, reservationRepo, onChainRegistry, orderService, events } = buildSystem({
+      balance: 1_000n,
+      reserved: 0n,
+      available: 1_000n,
+    });
+    seedReferencePrice(orderRepo, matchRepo);
+
+    const input = buildInput({ id: hexFill('04'), side: 'SELL', price: 500n, amount: 100n, ownerId: hexFill('bb'), signature: hexFill('dd') });
+    onChainRegistry.set(input.id, { state: 'OPEN', commitment: input.commitment });
+
+    const result = await orderService.submitOrder(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.pendingProtocolQuote).toBeNull();
+    expect(result.order.status).toBe('OPEN');
+    expect(reservationRepo.listByState('OPEN')).toHaveLength(0);
+    expect(events.map(([type]) => type)).toEqual(['order.created']);
+  });
+
+  it('overbuy beyond available liquidity is rejected at the quote layer: the order rests OPEN, no reservation', async () => {
+    const { orderRepo, matchRepo, reservationRepo, onChainRegistry, orderService } = buildSystem({
+      balance: 50n,
+      reserved: 0n,
+      available: 50n,
+    });
+    seedReferencePrice(orderRepo, matchRepo);
+
+    // amount 100 exceeds the 50 available — PricingEngine returns no quote.
+    const input = buildInput({ id: hexFill('05'), side: 'BUY', price: 1_100n, amount: 100n, ownerId: hexFill('bb'), signature: hexFill('dd'), payoutAddress: hexFill('99') });
+    onChainRegistry.set(input.id, { state: 'OPEN', commitment: input.commitment });
+
+    const result = await orderService.submitOrder(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.pendingProtocolQuote).toBeNull();
+    expect(result.order.status).toBe('OPEN');
+    expect(reservationRepo.listByState('OPEN')).toHaveLength(0);
+  });
+
+  it('double reconciliation is a no-op: a second reconciled read does not re-emit order.filled or re-record EXECUTE', async () => {
+    const { orderRepo, matchRepo, treasuryRepo, onChainRegistry, orderService, events, settleOnChain } = buildSystem({
+      balance: 10_000n,
+      reserved: 0n,
+      available: 10_000n,
+    });
+    seedReferencePrice(orderRepo, matchRepo);
+
+    const input = buildInput({ id: hexFill('06'), side: 'BUY', price: 1_100n, amount: 100n, ownerId: hexFill('bb'), signature: hexFill('dd'), payoutAddress: hexFill('99') });
+    onChainRegistry.set(input.id, { state: 'OPEN', commitment: input.commitment });
+    const result = await orderService.submitOrder(input);
+    if (!result.ok || !result.pendingProtocolQuote) throw new Error('unreachable');
+
+    settleOnChain(input.id, result.pendingProtocolQuote.quoteId);
+    await orderService.getOrderReconciled(input.id);
+    await orderService.getOrderReconciled(input.id); // second time: no-op
+
+    expect(events.filter(([type]) => type === 'order.filled')).toHaveLength(1);
+    expect(treasuryRepo.listRecent(10).filter((e) => e.kind === 'EXECUTE')).toHaveLength(1);
+  });
+
+  it('expired-unclaimed quote is reclaimed by the existing expiry sweep', async () => {
+    let currentMs = 1_700_000_000_000;
+    const { orderRepo, matchRepo, reservationRepo, onChainRegistry, orderService, ppmService } = buildSystem(
+      { balance: 10_000n, reserved: 0n, available: 10_000n },
+      () => currentMs,
+    );
+    seedReferencePrice(orderRepo, matchRepo);
+
+    const input = buildInput({ id: hexFill('07'), side: 'BUY', price: 1_100n, amount: 100n, ownerId: hexFill('bb'), signature: hexFill('dd'), payoutAddress: hexFill('99') });
+    onChainRegistry.set(input.id, { state: 'OPEN', commitment: input.commitment });
+    const result = await orderService.submitOrder(input);
+    if (!result.ok || !result.pendingProtocolQuote) throw new Error('unreachable');
+    const quoteId = result.pendingProtocolQuote.quoteId;
+    expect(reservationRepo.findById(quoteId)?.state).toBe('OPEN');
+
+    // Advance past the quote TTL (120s) and sweep — the never-claimed quote is
+    // released.
+    currentMs += 200_000;
+    const released = await ppmService.sweepExpiredReservations();
+    expect(released).toBe(1);
+    expect(reservationRepo.findById(quoteId)?.state).toBe('RELEASED');
   });
 });

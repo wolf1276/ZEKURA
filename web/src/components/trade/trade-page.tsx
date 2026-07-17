@@ -23,8 +23,7 @@ import type { AssetPair, MarketInsights, Order } from "@/lib/types";
 // wins. Never shown as a live/traded price; the chart's own footer already
 // discloses "Reference price line — oracle feed, not an order book".
 const FALLBACK_MID_PRICES: Record<string, number> = {
-  "tDUST-tUSD": 0.84,
-  "tNIGHT-tUSD": 1.62,
+  "tNIGHT-tZKR": 1.62,
 };
 
 const DEFAULT_INSIGHTS: MarketInsights = {

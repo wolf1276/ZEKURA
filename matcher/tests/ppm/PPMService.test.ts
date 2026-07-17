@@ -120,26 +120,18 @@ describe('PPMService.attemptFill', () => {
   it('reports "Protocol liquidity unavailable." when the Treasury has no liquidity for the asset', async () => {
     const { service } = makeHarness({ liquidity: { balance: 0n, reserved: 0n, available: 0n } });
     const result = await service.attemptFill(sampleOrder());
-    expect(result).toEqual({ filled: false, reason: 'Protocol liquidity unavailable.' });
+    expect(result).toEqual({ pending: false, reason: 'Protocol liquidity unavailable.' });
   });
 
   it("does not fill when the order's limit price does not cross the protocol's quote", async () => {
     // BUY quote at reference(1000) + 1% = 1010; order limit is 1000, below the quote.
-    const { service } = makeHarness({ liquidity: { balance: 10_000n, reserved: 0n, available: 10_000n } });
+    const { service, caller } = makeHarness({ liquidity: { balance: 10_000n, reserved: 0n, available: 10_000n } });
     const result = await service.attemptFill(sampleOrder({ price: 1_000n }));
-    expect(result.filled).toBe(false);
+    expect(result.pending).toBe(false);
+    expect(caller.reserveLiquidity).not.toHaveBeenCalled();
   });
 
-  it('does not fill a BUY order with no payoutAddress on file', async () => {
-    const { service } = makeHarness({ liquidity: { balance: 10_000n, reserved: 0n, available: 10_000n } });
-    const result = await service.attemptFill(sampleOrder({ payoutAddress: null }));
-    expect(result).toEqual({
-      filled: false,
-      reason: 'Order has no payout address on file — cannot receive a protocol-liquidity fill (see Order.payoutAddress)',
-    });
-  });
-
-  it('fills a crossing BUY order: reserves then settles, persists an EXECUTED reservation and RESERVE+EXECUTE treasury_events rows', async () => {
+  it('a crossing BUY order reserves liquidity and returns a pending quote WITHOUT settling — settleWithProtocol is now the buyer wallet\'s job', async () => {
     const { service, reservationRepo, treasuryRepo, orderRepo, events, caller } = makeHarness({
       liquidity: { balance: 10_000n, reserved: 0n, available: 10_000n },
     });
@@ -148,76 +140,88 @@ describe('PPMService.attemptFill', () => {
 
     const result = await service.attemptFill(order);
 
-    expect(result.filled).toBe(true);
-    if (!result.filled) throw new Error('unreachable');
-    expect(result.price).toBe(1_010n);
+    expect(result.pending).toBe(true);
+    if (!result.pending) throw new Error('unreachable');
+    expect(result.side).toBe('BUY');
+    expect(result.price).toBe(1_010n); // reference 1000 + 1% base spread
     expect(result.amount).toBe(100n);
-    expect(result.txId).toBe('settle-tx');
 
+    // The reservation is OPEN (not EXECUTED) and the settle call never fires.
     const reservation = reservationRepo.findById(result.quoteId);
-    expect(reservation?.state).toBe('EXECUTED');
+    expect(reservation?.state).toBe('OPEN');
     expect(reservation?.orderId).toBe(order.id);
-    expect(reservation?.amount).toBe(100n);
+    expect(caller.settleWithProtocol).not.toHaveBeenCalled();
 
-    const history = treasuryRepo.listRecent(10);
-    expect(history.map((h) => h.kind)).toEqual(['EXECUTE', 'RESERVE']); // newest first
-
+    // Only the RESERVE leg is recorded so far; EXECUTE comes at reconciliation.
+    expect(treasuryRepo.listRecent(10).map((h) => h.kind)).toEqual(['RESERVE']);
     expect(events.map(([type]) => type)).toEqual(['treasury.reserved']);
-    expect(caller.settleWithProtocol).toHaveBeenCalledTimes(1);
   });
 
-  it('declines a SELL order without attempting any on-chain call — settleWithProtocol has no way for the seller to supply the asset input, since every Treasury call is submitted by the Matcher operator wallet alone', async () => {
-    const { service, orderRepo, caller } = makeHarness({ liquidity: { balance: 10_000n, reserved: 0n, available: 10_000n } });
-    const order = sampleOrder({ side: 'SELL', price: 900n, payoutAddress: null });
+  it('a crossing SELL order with sufficient NIGHT liquidity reserves and returns a pending quote (SELL is now supported)', async () => {
+    // SELL quote = reference(1000) - 1% = 990; payment = 100 * 990 = 99_000.
+    // available must cover both the asset quote and the NIGHT payment.
+    const { service, reservationRepo, orderRepo, caller } = makeHarness({
+      liquidity: { balance: 200_000n, reserved: 0n, available: 200_000n },
+    });
+    const order = sampleOrder({ side: 'SELL', price: 500n, amount: 100n });
     orderRepo.insert(order);
 
     const result = await service.attemptFill(order);
 
-    expect(result.filled).toBe(false);
-    if (result.filled) throw new Error('unreachable');
-    expect(result.reason).toBe('Protocol liquidity fills are only available for buy orders.');
-    expect(caller.reserveLiquidity).not.toHaveBeenCalled();
+    expect(result.pending).toBe(true);
+    if (!result.pending) throw new Error('unreachable');
+    expect(result.side).toBe('SELL');
+    expect(result.price).toBe(990n);
+    expect(reservationRepo.findById(result.quoteId)?.state).toBe('OPEN');
     expect(caller.settleWithProtocol).not.toHaveBeenCalled();
   });
 
-  it('does not fill when reserveLiquidity fails on-chain, and never attempts settleWithProtocol', async () => {
-    const { service, caller } = makeHarness({
+  it('declines a crossing SELL order when the Treasury lacks enough NIGHT to pay the seller, without reserving', async () => {
+    // available (1000) covers the asset quote + risk limit, but the NIGHT
+    // payment (100 * 990 = 99_000) far exceeds it.
+    const { service, orderRepo, caller } = makeHarness({ liquidity: { balance: 1_000n, reserved: 0n, available: 1_000n } });
+    const order = sampleOrder({ side: 'SELL', price: 500n, amount: 100n });
+    orderRepo.insert(order);
+
+    const result = await service.attemptFill(order);
+
+    expect(result.pending).toBe(false);
+    if (result.pending) throw new Error('unreachable');
+    expect(result.reason).toBe('Insufficient protocol NIGHT liquidity to pay the seller.');
+    expect(caller.reserveLiquidity).not.toHaveBeenCalled();
+  });
+
+  it('does not reserve when reserveLiquidity fails on-chain, and never attempts settleWithProtocol', async () => {
+    const { service, reservationRepo, caller } = makeHarness({
       liquidity: { balance: 10_000n, reserved: 0n, available: 10_000n },
       reserveFails: true,
     });
     const result = await service.attemptFill(sampleOrder());
-    expect(result.filled).toBe(false);
+    expect(result.pending).toBe(false);
     expect(caller.settleWithProtocol).not.toHaveBeenCalled();
+    expect(reservationRepo.listByState('OPEN')).toHaveLength(0);
   });
+});
 
-  it('releases the reservation (best-effort) when settleWithProtocol fails, and the reservation ends up RELEASED', async () => {
-    const { service, reservationRepo, treasuryRepo, orderRepo, events } = makeHarness({
+describe('PPMService.markReservationExecuted', () => {
+  it('transitions an OPEN reservation to EXECUTED and records an EXECUTE event; a second call is a no-op', async () => {
+    const { service, reservationRepo, treasuryRepo, orderRepo } = makeHarness({
       liquidity: { balance: 10_000n, reserved: 0n, available: 10_000n },
-      settleFails: true,
     });
     const order = sampleOrder();
     orderRepo.insert(order);
-    const result = await service.attemptFill(order);
+    const pending = await service.attemptFill(order);
+    expect(pending.pending).toBe(true);
+    if (!pending.pending) throw new Error('unreachable');
 
-    expect(result.filled).toBe(false);
-    const reservations = reservationRepo.listByState('RELEASED');
-    expect(reservations).toHaveLength(1);
-    expect(treasuryRepo.listRecent(10).map((h) => h.kind)).toEqual(['RELEASE', 'RESERVE']);
-    expect(events.map(([type]) => type)).toEqual(['treasury.reserved', 'treasury.released']);
-  });
+    const first = service.markReservationExecuted(pending.quoteId);
+    expect(first?.state).toBe('EXECUTED');
+    expect(reservationRepo.findById(pending.quoteId)?.state).toBe('EXECUTED');
+    expect(treasuryRepo.listRecent(10).map((h) => h.kind)).toEqual(['EXECUTE', 'RESERVE']);
 
-  it('leaves the reservation OPEN (for later expiry sweep) when both settleWithProtocol and the best-effort release fail', async () => {
-    const { service, reservationRepo, orderRepo } = makeHarness({
-      liquidity: { balance: 10_000n, reserved: 0n, available: 10_000n },
-      settleFails: true,
-      releaseFails: true,
-    });
-    const order = sampleOrder();
-    orderRepo.insert(order);
-    const result = await service.attemptFill(order);
-
-    expect(result.filled).toBe(false);
-    expect(reservationRepo.listByState('OPEN')).toHaveLength(1);
+    // Idempotent: reconciling twice does not record a second EXECUTE row.
+    service.markReservationExecuted(pending.quoteId);
+    expect(treasuryRepo.listRecent(10).filter((h) => h.kind === 'EXECUTE')).toHaveLength(1);
   });
 });
 

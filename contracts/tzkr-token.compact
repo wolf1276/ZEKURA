@@ -91,6 +91,16 @@ export circuit owner(): Either<Bytes<32>, ContractAddress> {
   return Ownable_owner();
 }
 
+// Off-chain helper: reproduces exactly how both Ownable and FungibleToken
+// derive a caller's on-chain account id from their secret key
+// (`Utils.computeAccountId(sk) = persistentHash([sk])`). Exported (and pure)
+// so src/deploy-tzkr.ts / src/mint-tzkr.ts can compute the owner/recipient
+// account id the same way the circuits do — the same pattern the exchange
+// contract uses to expose deriveAdminId/deriveAssetKey for off-chain callers.
+export pure circuit deriveAccountId(secretKey: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<1, Bytes<32> > >([secretKey]);
+}
+
 // ---------------------------------------------------------------------------
 // Transfers & allowances (delegated to FungibleToken)
 // ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ function mulberry32(seed: number) {
 }
 
 /**
- * tDUST/tUSD is a synthetic oracle-referenced pair, not a real listed
+ * tNIGHT/tZKR is a synthetic oracle-referenced pair, not a real listed
  * instrument on any market data provider — candles are generated from a
  * seeded random walk so the chart has stable, realistic-looking history.
  */

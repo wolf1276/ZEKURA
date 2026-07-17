@@ -43,9 +43,11 @@ function validPayload() {
 
 function makeFakeOrderService(overrides: Partial<OrderService> = {}): OrderService {
   return {
-    submitOrder: vi.fn(async (): Promise<SubmitOrderResult> => ({ ok: true, order: sampleOrder(), match: null, protocolFill: null })),
+    submitOrder: vi.fn(async (): Promise<SubmitOrderResult> => ({ ok: true, order: sampleOrder(), match: null, protocolFill: null, pendingProtocolQuote: null })),
     cancelOrder: vi.fn((): CancelOrderResult => ({ ok: false, code: 'NOT_FOUND', message: 'no' })),
     getOrder: vi.fn(() => undefined),
+    getOrderReconciled: vi.fn(async () => undefined),
+    reconcileAllPendingProtocolFills: vi.fn(async () => 0),
     listOpen: vi.fn(() => []),
     ...overrides,
   } as unknown as OrderService;
@@ -150,7 +152,7 @@ describe('DELETE /orders/:id', () => {
 
 describe('GET /orders/:id', () => {
   it('returns 200 with the order when found', async () => {
-    const orderService = makeFakeOrderService({ getOrder: vi.fn(() => sampleOrder()) as unknown as OrderService['getOrder'] });
+    const orderService = makeFakeOrderService({ getOrderReconciled: vi.fn(async () => sampleOrder()) as unknown as OrderService['getOrderReconciled'] });
     const app = build(orderService);
     const res = await app.inject({ method: 'GET', url: `/orders/${hexFill('01')}` });
     expect(res.statusCode).toBe(200);
@@ -195,9 +197,9 @@ describe('unmatched routes and errors', () => {
 
   it('returns a structured 500 when a handler throws unexpectedly', async () => {
     const orderService = makeFakeOrderService({
-      getOrder: vi.fn(() => {
+      getOrderReconciled: vi.fn(async () => {
         throw new Error('boom');
-      }) as unknown as OrderService['getOrder'],
+      }) as unknown as OrderService['getOrderReconciled'],
     });
     const app = build(orderService);
     const res = await app.inject({ method: 'GET', url: `/orders/${hexFill('01')}` });
