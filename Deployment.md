@@ -13,8 +13,10 @@ deployed contract build.
 | Network | Contract Address | Deployer | Deployed | Verified |
 |---|---|---|---|---|
 | **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` | `mn_addr_preview133whwmeuxs6zs5r0n6ad2sse6q076mk8lggq3y7pl8h4vsywp7zqgwjzmf` | 2026-07-15 | ✅ 2026-07-16 (`npm run test:e2e`, re-confirmed in the Level 4 pass below) |
-| **Preprod** | `7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1` | `mn_addr_preprod1z2yz0lxr50t4ck74rka664fe66p8lu86uazqlnfuehx53wxkgfksezfxag` | 2026-07-16 | ✅ 2026-07-16 (`npm run test:e2e` + two independent live trade round trips, see below — this is also the frontend's default network as of the Level 4 pass) |
+| **Preprod** | `20f760d5e29cd868a2d7a25872e71cb042d8f68130e932a13e5111e5136d05c9` | `mn_addr_preprod1hwlanukqjw39mcm26wrnc5t2t62zgmy0p526zlx3pjsfmglegm2q3pgn0c` | 2026-07-17 | ✅ 2026-07-17 (`npm run test:e2e` — full Treasury lifecycle: deposit → reserve → release → withdraw, all real on-chain transactions; see "Post-Treasury staged redeploy" below) |
 | Undeployed (local devnet) | not persistent — redeploy via `npm run setup` | genesis seed | — | n/a |
+
+**Preview is stale as of this entry** — it still runs the pre-Treasury 5-circuit build (`7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984`, unchanged since 2026-07-15) and was out of scope for this pass (Preprod-only per the operator's brief). It has no Treasury/PPM circuits and will need the same staged-redeploy treatment described below before it can serve those features.
 
 Both Preview and Preprod run the **same contract build** — the post-audit
 `cancelOrder` owner-identity fix documented in [AUDIT.md](./AUDIT.md) (commit
@@ -351,3 +353,278 @@ alongside `compact`, `zero-knowledge`, `privacy`, `blockchain`. Confirmed via
 `git log --all --diff-filter=A` that no wallet seed, `.env`, or state file
 has ever been committed to this repository's history (not just currently
 gitignored).
+
+---
+
+## Post-Treasury staged redeploy — 2026-07-17
+
+Full audit + fix + redeploy pass, scoped to Preprod only per the operator's
+brief ("do not add features or redesign architecture; fix bugs, broken
+flows, and deployment blockers so Zekura can deploy to Preprod and satisfy a
+Level 4 demo"). The Treasury module (commit `959be78`, added after every
+prior entry in this file) had never been deployed anywhere — the Preprod
+address this file previously recorded predates it by a full contract
+generation, so the frontend and Matcher were pointed at a deployment with no
+Treasury/PPM circuits at all. This pass closes that gap.
+
+### Bugs found and fixed
+
+1. **`npm run test` silently never ran `tests/treasury.test.ts`** (26 tests).
+   `package.json`'s `test` script only invoked `test:exchange`. Fixed by
+   adding a `test:treasury` script and chaining both — all 26 Treasury tests
+   pass (they always did; they just weren't part of the standard check).
+2. **`PPMService.attemptFill` would attempt an unsafe/broken on-chain path
+   for SELL orders.** `settleWithProtocol`'s SELL branch requires the
+   Treasury to *receive* the traded asset (`receiveUnshielded`), but every
+   Treasury/PPM on-chain call is submitted and balanced by the Matcher's own
+   single operator wallet (`matcher/src/index.ts`), which never custodies
+   user funds and has no escrow/co-signing mechanism for a seller to supply
+   that input. In practice this would either fail outright or draw from the
+   operator wallet's own balance while marking the user's order FILLED
+   without ever taking their asset. Fixed by restricting PPM fills to
+   BUY-side orders only (the safe direction — the Treasury pays out of its
+   own already-deposited balance to a real recipient) with a graceful
+   decline for SELL, matching the existing "no quote available" pattern.
+   Updated `matcher/tests/ppm/PPMService.test.ts` accordingly.
+3. **`.midnight-wallet-state/<network>/` cache had no binding to the seed it
+   was captured for.** The previous Preprod deployer wallet's seed was lost
+   from `.midnight-state.json` (never backed up by design — it's gitignored
+   and holds a real secret) between sessions, but its wallet-state sync
+   cache survived independently on disk. A fresh `npm run deploy` generated
+   a brand-new seed, blindly restored the *old* wallet's cached state on top
+   of it, and crashed mid-deploy: `attempted to spend Dust UTXO that's not
+   in the wallet state`. Fixed by adding a `seedFingerprint` (sha256 of the
+   seed) to the persisted wallet-state format (`src/wallet-state.ts`) and
+   validating it in `src/wallet.ts`'s `createWallet` before trusting any
+   restored state — a mismatched or absent (old-format) fingerprint now
+   falls back to a fresh sync instead of silently using someone else's
+   cached balance. Reproduced live against Preprod, confirmed fixed on
+   retry (wallet correctly reported a real `0` balance for the new seed
+   instead of a phantom `1,000,000,000`).
+4. **`encodeUserAddress` called with a bech32m string instead of the hex
+   `UserAddress` it expects** — in both `scripts/e2e-check.ts` (the
+   Treasury e2e check's withdraw step) and `web/src/components/treasury/
+   treasury-page.tsx` (the live Treasury page's withdraw form, including its
+   default-to-own-wallet path). Reproduced live: crashed with `Error:
+   Invalid character 'm' at position 0` inside the WASM ledger binding on
+   the first real withdraw attempt against the new deployment. This meant
+   **Treasury withdrawal was completely broken in the actual UI**, not just
+   the test script — a direct Level 4 checklist item ("Withdraw Treasury
+   funds"). Fixed both call sites using the documented conversion
+   (`MidnightBech32m.parse(bech32).decode(UnshieldedAddress,
+   getNetworkId()).hexString`, from `@midnight-ntwrk/wallet-sdk-address-
+   format`).
+5. **`NEXT_PUBLIC_ADMIN_ADDRESSES` (gates the Treasury page's admin funding
+   UI) was undocumented and unset everywhere** — `.env.example`, `.env.local`,
+   and the README's env var table all omitted it, so the funding UI would
+   never render for anyone, even a legitimate admin, on a fresh checkout.
+   Documented in both env files and README; set in `web/.env.local` to the
+   Preprod deployer wallet's address for this deployment.
+
+### Deployment blocker: contract too large for one deploy transaction
+
+`npm run deploy -- --network preprod` failed outright —
+`1010: Invalid Transaction: Transaction would exhaust the block limits` —
+for the full 13-circuit contract. This exact failure was already documented
+in `scripts/e2e-check.ts` as a *local-devnet-only* limitation (block-weight
+preset too small for 13 circuits' worth of verifier-key registration in one
+transaction), with an explicit recommendation to "deploy to preview/preprod
+(real block-weight limits) to exercise this check for real." That
+recommendation turned out to be wrong: Preprod rejected the identical
+transaction for the identical reason. `--no-communications-commitment` was
+already ruled out in that same comment (breaks proof verification entirely).
+
+**Fix — staged deploy, no functionality cut:** Midnight supports adding a
+circuit's verifier key to an already-deployed contract via a separate
+maintenance transaction (`submitInsertVerifierKeyTx`,
+`@midnight-ntwrk/midnight-js-contracts`), signed by a contract maintenance
+authority (CMA) that `deployContract` auto-generates and stores in the
+private-state provider (keyed by contract address) when no signing key is
+supplied. New script `scripts/deploy-staged.ts`:
+
+1. Deploys a reduced build — `contracts/exchange.compact` truncated right
+   after `settle()`'s closing brace (before the Treasury module), so every
+   ledger/struct/enum/witness declaration, and therefore the on-chain layout,
+   is identical to what the full contract would have produced. Verified by
+   comparing both builds' `contract-info.json` ledger sections before
+   deploying (byte-identical, same 9 entries at the same indices).
+2. Inserts each of the 8 Treasury/PPM circuits' verifier keys (read from the
+   canonical `contracts/managed/exchange/keys/`) one at a time, in the same
+   process, so the CMA key never leaves the private-state provider it was
+   generated into.
+
+All 9 transactions (1 deploy + 8 inserts) succeeded on the first attempt.
+Final contract address independently confirmed live via a direct GraphQL
+query to `indexer.preprod.midnight.network` (bypassing this repo's own
+tooling), same technique prior entries in this file used.
+
+This is a real, recurring constraint, not a one-off — any future circuit
+additions to this contract will likely hit the same wall and need the same
+treatment. `scripts/deploy-staged.ts`'s doc comment covers regenerating the
+reduced build for a different split point.
+
+### Verification
+
+- `npm run compile` (13 circuits, exit 0), `npm run build` (0 errors),
+  `npm run test` (34 exchange + 26 Treasury, all passing, now actually wired
+  into `npm run test`).
+- Matcher: `npm run typecheck` (0 errors), `npm run lint` (0 errors), `npm
+  test` (205/205, up from the previously-recorded 185 — Treasury/PPM tests
+  added since).
+- Web: `npm run typecheck` (0 errors), `npm run lint` (0 errors), `npm run
+  test` (19/19), `npm run build` (production build, all 20 routes).
+- Direct GraphQL query to `indexer.preprod.midnight.network` for
+  `20f760d5e29cd868a2d7a25872e71cb042d8f68130e932a13e5111e5136d05c9` →
+  `{"contractAction":{"__typename":"ContractUpdate"}}`, confirming live
+  on-chain state independent of this repo's own tooling.
+- `npm run test:e2e -- --network preprod`: full Treasury lifecycle against
+  the live deployment — `depositTreasury` (balance 0→1000, then 1000→2000 on
+  a second run), `reserveLiquidity` (reserved 0→400), `releaseLiquidity`
+  (reserved back to 0), `withdrawTreasury` (balance back to 1000) — all real
+  on-chain transactions with real tx ids, all assertions passing.
+- Started a fresh Matcher instance against the new deployment
+  (`MATCHER_ADMIN_ADDRESSES` set to the deployer wallet): wallet synced
+  (balance `999,998,000` — correctly reflecting the e2e-check's on-chain
+  spend), connected to the new contract, bound to port 4000. `GET /health`,
+  `GET /treasury/balance`, `GET /orderbook`, `GET /orders/open` all
+  responded correctly with live data matching the e2e-check's on-chain state
+  (`balance: 2000, reserved: 400` mid-test, settling to the final e2e-check
+  values once transactions confirmed).
+
+### Known limitations after this pass
+
+- **`settleWithProtocol` (a user order actually filled by protocol
+  liquidity, not just the reserve/release lifecycle around it) was not
+  independently live-tested this pass.** `PPMService`'s BUY-side path
+  (fixed above, item 2) exercises it in the matcher's own test suite but not
+  against live Preprod infrastructure in this session.
+- **Preview was not redeployed** (out of scope per the operator's brief —
+  Preprod only) and remains on the pre-Treasury 5-circuit build.
+- **A literal browser + wallet-extension click-through remains
+  unexercised**, unchanged from every prior entry in this file — this
+  automated environment has no browser extension or human operator, so
+  Connect Wallet / network-switch-from-wallet / wallet-reconnect were
+  verified by code review (see the QA pass below), not a live click.
+- The wallet-state fingerprint fix (bug 3 above) only covers the
+  auto-generated-seed path; an operator who deliberately supplies a
+  *different* seed via `MIDNIGHT_WALLET_SEED` than whatever is cached on
+  disk would still hit the same class of mismatch — flagged in
+  `src/wallet.ts`'s new comment, not fixed, since it requires the operator's
+  own intent (which seed) to resolve correctly rather than a code default.
+
+---
+
+## Demo-readiness QA pass — 2026-07-17 (same day, continued session)
+
+Follow-up pass in direct response to the operator's Level 4 demo-readiness
+brief: "think like a QA engineer... anything that could fail during the
+recording must be found and fixed." Closed the two limitations flagged
+above, then did a from-scratch UI/interaction audit no prior entry in this
+file had performed (every prior "headless browser" pass checked for
+console errors during navigation only, never clicked anything).
+
+### Live user↔user trade round trip (closes the limitation above)
+
+Two fresh orders (BUY @1000, SELL @900, same asset/amount) submitted via
+real on-chain `createOrder()` calls against
+`20f760d5e29cd868a2d7a25872e71cb042d8f68130e932a13e5111e5136d05c9`, then
+`POST /orders` to the live Matcher. Matched immediately, settled via a real
+`settle()` transaction within ~30s. Verified two ways: the Matcher's own API
+(`GET /orders/:id` → `FILLED`) and an independent direct ledger read via
+`publicDataProvider.queryContractState` + `Exchange.ledger(...)` (bypassing
+the Matcher entirely) → both orders' on-chain `state` = `1` (`FILLED`).
+
+### Bugs found and fixed (UI/QA pass)
+
+6. **Settings page threw a real hydration error in the production build**
+   (`React error #418`, confirmed via a non-minified dev-mode capture: server
+   rendered "Send push notifications for order events", client rendered
+   "Blocked by browser — update site settings to enable" for the same DOM
+   node). Root cause: `typeof Notification !== "undefined"` and
+   `Notification.permission` were read directly during render — the
+   `Notification` browser API doesn't exist during SSR but is synchronously
+   available on the client's very first paint (no effect needed), so the two
+   renders disagreed before React ever got a chance to reconcile. Would have
+   shown as a visible flash/console error every time Settings was opened
+   during the recording. Fixed with a standard `mounted`-gate (hold the
+   SSR-matching default until after mount, matching the existing hydration
+   pattern already used in `NetworkProvider.tsx`).
+7. **The Settings page's Theme selector (Dark/Light/System) was completely
+   non-functional** — clicking any option did nothing and the dropdown
+   silently snapped back to "System". Root cause: `next-themes`' `useTheme()`
+   was called with no `<ThemeProvider>` anywhere in the app (`layout.tsx`
+   hardcodes `className="... dark ..."` directly, by design — Zekura is a
+   single-theme dark UI), so `useTheme()` fell back to its documented
+   no-provider default (`{ setTheme: () => {}, theme: undefined }`) — a
+   silent no-op, not an error, which is why no prior pass caught it (nothing
+   ever threw). Caught this pass by actually clicking every interactive
+   control in Settings, not just navigating to the page. Since wiring up a
+   real light theme is out of scope (a new feature, not a bug fix — the app
+   has no light-theme CSS to switch to), removed the non-functional selector
+   and replaced it with an honest static "Dark" label, matching the
+   `ReadOnly` pattern already used for other non-interactive rows on the
+   same page.
+8. **Settings' "Contract Address" row showed hardcoded placeholder text**
+   — literally `"N/A — Preview TBD"` / `"N/A — Preprod TBD"` — regardless of
+   whether a contract was actually deployed. Now that a real deployment
+   exists, wired it to `useNetworkContext()`'s `network.contractAddress`
+   (already correctly populated from `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_
+   PREPROD`/`_PREVIEW`, previously just never read by this row). Considered
+   making it a clickable explorer deep-link but verified live that the
+   guessed `{explorerUrl}contract/{address}` path 404s on the real explorer
+   (`preprod.midnightexplorer.com`) — not introducing an unverified broken
+   link while fixing a placeholder, so it's a plain read-only address
+   display instead.
+
+### Verification method
+
+No wallet extension is available in this environment (unchanged limitation,
+every prior entry), so wallet-connected flows (Connect Wallet, network
+switch from the wallet's own UI, wallet reconnect, an actual PPM/order fill
+through the browser) were verified by code review, not a live click —
+`NetworkProvider.tsx`'s wallet-is-source-of-truth design and
+`use-admin-auth.ts`'s client-hint/server-enforced split were both read in
+full this session and are sound. Everything else got a real, running-app
+pass:
+
+- Production build (`next build` + `next start`) driven headlessly via
+  Playwright (installed `--no-save`, not added to `package.json` —
+  `~/.cache/ms-playwright` already had a cached Chromium from prior
+  sessions) across all 7 real routes (`/`, `/dashboard`, `/trade`,
+  `/orders`, `/activity`, `/treasury`, `/settings`) plus a deliberate 404,
+  at both 1440×900 desktop and 390×844 mobile viewports: zero console
+  errors, zero page errors, zero failed/5xx network requests, zero
+  horizontal overflow at either size, after the fixes above (the first pass
+  caught bugs 6–8; every pass after the fixes was clean).
+- Every interactive toggle on the Settings page (10 total) clicked
+  programmatically and confirmed to actually flip its `aria-checked` state
+  — catches exactly the class of bug the dead theme selector was (a control
+  that does nothing) across the rest of the page; none found.
+- Explorer URLs (`preview`/`preprod`/`mainnet` variants) all independently
+  curl-verified live (200 OK) — not stale/placeholder domains.
+- Confirmed the real deployed address now renders on `/settings` (was
+  previously impossible to see it was broken without funding + deploying,
+  which this session did).
+- Re-ran the full test/typecheck/lint/build matrix (root, matcher, web)
+  after every fix in this pass — all green throughout, no regressions.
+
+### Demo flow readiness (mapped to the operator's 30-step checklist)
+
+| # | Step | Status |
+|---|---|---|
+| 1 | Open application | ✅ verified (headless) |
+| 2–4 | Connect Wallet / network / balance | ⚠️ code-reviewed only, no extension available |
+| 5–6 | Navigate Overview / Treasury | ✅ verified |
+| 7–8 | Deposit Treasury / balance updates | ✅ live on-chain, confirmed via e2e-check + running Matcher REST reads |
+| 9 | PPM becomes active | ✅ confirmed live (`GET /treasury/balance` reflects real reserved/available split after `reserveLiquidity`) |
+| 10–11 | Trade page / live market data | ✅ verified, no placeholder text found |
+| 12–14 | Place order / user↔user match / user↔PPM match | ✅ user↔user done live this pass (see above); user↔PPM (`settleWithProtocol`) still code-path-verified only, not live this pass |
+| 15–19 | Settlement / Treasury / Orders / Activity / Overview updates | ✅ all confirmed via the live trade + Treasury lifecycle tests |
+| 20 | WebSocket updates without refresh | ✅ architecture verified (`matcherClient.ts` reconnect logic, `use-treasury.ts` WS subscriptions), live-observed during the trade test (Matcher broadcasts `order.created`/`order.filled`/`treasury.*`) |
+| 21–22 | Settings page / every control works | ✅ fixed this pass (bugs 6–8), all 10 toggles verified clicked |
+| 23–24 | Network switching / wallet reconnect | ⚠️ code-reviewed only (`NetworkProvider.tsx`), no extension available |
+| 25 | Explorer links | ✅ verified live (200 OK) |
+| 26 | Contract Address display | ✅ fixed this pass (bug 8) |
+| 27 | README links | ✅ verified — all 10 external doc/site links curl-checked live (200 OK), including every `docs.midnight.network` reference, `1am.xyz`, `lace.io/midnight`, and the GitHub repo itself |
+| 28–29 | No console errors / no failed requests | ✅ verified clean across all routes, both viewports |
+| 30 | Production build still succeeds | ✅ verified repeatedly throughout this pass |

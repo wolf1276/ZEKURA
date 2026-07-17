@@ -37,6 +37,8 @@ import { resolveNetwork, getOrCreateSeed, getOrCreateAdminSecret, getDeployment 
 import { createWallet, persistWalletState, unshieldedToken } from '../src/wallet';
 import { encodeUserAddress } from '@midnight-ntwrk/ledger-v8';
 import { encodeRawTokenType } from '@midnight-ntwrk/compact-runtime';
+import { getNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
+import { MidnightBech32m, UnshieldedAddress } from '@midnight-ntwrk/wallet-sdk-address-format';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
 import type { Contract as ExchangeContract } from '../contracts/managed/exchange/contract/index.js';
 
@@ -226,7 +228,12 @@ async function main() {
   console.log(`  ✓ releaseLiquidity: reserved back to ${afterRelease.reserved}`);
 
   console.log('  Submitting withdrawTreasury (returning the deposit to this wallet)...');
-  const ownAddressBytes = encodeUserAddress(walletCtx.unshieldedKeystore.getBech32Address().toString());
+  // encodeUserAddress expects the hex UserAddress form, not the bech32m
+  // string getBech32Address() returns — MidnightBech32m.parse(...).decode(...)
+  // is the documented conversion (see @midnight-ntwrk/wallet-sdk-address-format).
+  const ownBech32Address = walletCtx.unshieldedKeystore.getBech32Address().toString();
+  const ownAddressHex = MidnightBech32m.parse(ownBech32Address).decode(UnshieldedAddress, getNetworkId()).hexString;
+  const ownAddressBytes = encodeUserAddress(ownAddressHex);
   const recipient = { is_left: false, left: { bytes: new Uint8Array(32) }, right: { bytes: ownAddressBytes } };
   await foundContract.callTx.withdrawTreasury(assetKey, DEPOSIT_AMOUNT, recipient);
   await refresh();

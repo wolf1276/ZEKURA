@@ -166,16 +166,18 @@ describe('PPMService.attemptFill', () => {
     expect(caller.settleWithProtocol).toHaveBeenCalledTimes(1);
   });
 
-  it('fills a crossing SELL order without requiring a payoutAddress', async () => {
-    const { service, orderRepo } = makeHarness({ liquidity: { balance: 10_000n, reserved: 0n, available: 10_000n } });
+  it('declines a SELL order without attempting any on-chain call — settleWithProtocol has no way for the seller to supply the asset input, since every Treasury call is submitted by the Matcher operator wallet alone', async () => {
+    const { service, orderRepo, caller } = makeHarness({ liquidity: { balance: 10_000n, reserved: 0n, available: 10_000n } });
     const order = sampleOrder({ side: 'SELL', price: 900n, payoutAddress: null });
     orderRepo.insert(order);
 
     const result = await service.attemptFill(order);
 
-    expect(result.filled).toBe(true);
-    if (!result.filled) throw new Error('unreachable');
-    expect(result.price).toBe(990n); // 1000 - 1%
+    expect(result.filled).toBe(false);
+    if (result.filled) throw new Error('unreachable');
+    expect(result.reason).toBe('Protocol liquidity fills are only available for buy orders.');
+    expect(caller.reserveLiquidity).not.toHaveBeenCalled();
+    expect(caller.settleWithProtocol).not.toHaveBeenCalled();
   });
 
   it('does not fill when reserveLiquidity fails on-chain, and never attempts settleWithProtocol', async () => {

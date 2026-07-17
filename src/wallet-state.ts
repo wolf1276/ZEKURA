@@ -26,6 +26,21 @@ export interface PersistedWalletState {
   shielded?: unknown;
   unshielded?: unknown;
   dust?: string;
+  /**
+   * sha256(seed) hex, written alongside the child states it was captured
+   * with. Lets a caller (wallet.ts's createWallet) detect a cache directory
+   * that belongs to a *different* seed than the one currently in use — e.g.
+   * .midnight-state.json was lost/regenerated (no on-disk backup by design,
+   * since it holds a real seed) while this gitignored cache directory
+   * survived on disk — before blindly restoring from it. Restoring
+   * mismatched state produces a wallet that reports balances/UTXOs it
+   * cannot actually spend, since the signing keys come from the *current*
+   * seed. Not itself sensitive: a one-way hash, never the seed itself.
+   * Absent (old-format cache predating this field) is treated the same as
+   * mismatched — untrusted, falls back to a fresh sync — never assumed
+   * valid.
+   */
+  seedFingerprint?: string;
 }
 
 export interface FsOptions {
@@ -38,6 +53,10 @@ function networkDir(network: NetworkId, opts: FsOptions = {}): string {
 
 function statePath(network: NetworkId, kind: ChildKind, opts: FsOptions = {}): string {
   return path.join(networkDir(network, opts), `${kind}.json`);
+}
+
+function fingerprintPath(network: NetworkId, opts: FsOptions = {}): string {
+  return path.join(networkDir(network, opts), 'fingerprint.json');
 }
 
 function atomicWrite(file: string, content: string): void {
@@ -76,6 +95,7 @@ export function loadWalletState(network: NetworkId, opts: FsOptions = {}): Persi
     shielded: readVersionedState(statePath(network, 'shielded', opts)),
     unshielded: readVersionedState(statePath(network, 'unshielded', opts)),
     dust: readVersionedState<string>(statePath(network, 'dust', opts)),
+    seedFingerprint: readVersionedState<string>(fingerprintPath(network, opts)),
   };
 }
 
@@ -87,6 +107,7 @@ export function saveWalletState(
   if (state.shielded !== undefined) writeVersionedState(statePath(network, 'shielded', opts), state.shielded);
   if (state.unshielded !== undefined) writeVersionedState(statePath(network, 'unshielded', opts), state.unshielded);
   if (state.dust !== undefined) writeVersionedState(statePath(network, 'dust', opts), state.dust);
+  if (state.seedFingerprint !== undefined) writeVersionedState(fingerprintPath(network, opts), state.seedFingerprint);
 }
 
 export function clearWalletState(network: NetworkId, opts: FsOptions = {}): void {

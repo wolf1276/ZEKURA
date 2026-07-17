@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
-import { useTheme } from "next-themes";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { PageShell, Card } from "@/components/layout/page-shell";
 import { useWallet } from "@/wallet/walletHooks";
@@ -9,6 +8,7 @@ import { formatAmount, truncateAddress } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useSettings, applyDataAttributes } from "@/hooks/use-settings";
 import { useTreasury } from "@/hooks/use-treasury";
+import { useNetworkContext } from "@/network/networkContext";
 
 const NAV = [
   "Wallet",
@@ -127,7 +127,20 @@ function ReadOnly({ children }: { children: React.ReactNode }) {
 export function SettingsPage() {
   const { status, wallet, openModal, disconnect } = useWallet();
   const { balance: treasuryBalance, ppmStatus } = useTreasury();
-  const { theme, setTheme } = useTheme();
+  const { network } = useNetworkContext();
+  // `typeof Notification` resolves differently on the server (no such
+  // global) than on the client's very first render (the browser API is
+  // synchronously available, no effect needed) — rendering it directly
+  // causes a hydration mismatch (React error #418, confirmed live: server
+  // rendered "Send push notifications...", client rendered "Blocked by
+  // browser..." for the same node). Fix: hold the SSR-matching default
+  // until mounted, then switch to the real value.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time hydration read from an external system (browser Notification API / next-themes), not derivable during render without desyncing SSR output
+    setMounted(true);
+  }, []);
+  const notificationApiAvailable = mounted && typeof Notification !== "undefined";
   const {
     autoConnect, setAutoConnect,
     compactMode, setCompactMode,
@@ -380,16 +393,8 @@ export function SettingsPage() {
           </Section>
 
           <Section id="appearance" title="Appearance" subtitle="Display preferences">
-            <Row label="Theme">
-              <select
-                value={theme ?? "system"}
-                onChange={(e) => setTheme(e.target.value)}
-                className="rounded-md border border-border bg-transparent px-3 py-1.5 text-xs text-foreground/90 outline-none"
-              >
-                <option value="system">System</option>
-                <option value="dark">Dark</option>
-                <option value="light">Light</option>
-              </select>
+            <Row label="Theme" hint="Zekura is a dark-only interface">
+              <ReadOnly>Dark</ReadOnly>
             </Row>
             <Row
               label="Compact Mode"
@@ -422,15 +427,15 @@ export function SettingsPage() {
             <Row
               label="Browser Notifications"
               hint={
-                typeof Notification !== "undefined" && Notification.permission === "denied"
+                notificationApiAvailable && Notification.permission === "denied"
                   ? "Blocked by browser — update site settings to enable"
                   : "Send push notifications for order events"
               }
             >
-              {typeof Notification === "undefined" ? (
-                <ReadOnly>Unsupported</ReadOnly>
-              ) : (
+              {notificationApiAvailable ? (
                 <Toggle checked={notifyBrowser} onChange={setNotifyBrowser} />
+              ) : (
+                <ReadOnly>Unsupported</ReadOnly>
               )}
             </Row>
           </Section>
@@ -469,7 +474,7 @@ export function SettingsPage() {
               <ReadOnly>@midnight-ntwrk 4.0.4</ReadOnly>
             </Row>
             <Row label="Contract Address">
-              <ReadOnly>{wallet?.configuration?.networkId === "preview" ? "N/A — Preview TBD" : wallet?.configuration?.networkId === "preprod" ? "N/A — Preprod TBD" : "—"}</ReadOnly>
+              <ReadOnly>{network.contractAddress ? truncateAddress(network.contractAddress, 10, 6) : `Not deployed on ${network.id}`}</ReadOnly>
             </Row>
             <Row label="Matcher Status">
               <ReadOnly>{status === "connected" ? "Available" : "—"}</ReadOnly>

@@ -20,8 +20,9 @@
     "proof-server:start": "docker compose up -d",
     "proof-server:stop": "docker compose down",
     "clean": "rm -rf contracts/managed .midnight-state.json .midnight-wallet-state",
-    "test": "npm run test:exchange",
+    "test": "npm run test:exchange && npm run test:treasury",
     "test:exchange": "tsx tests/exchange.test.ts",
+    "test:treasury": "tsx tests/treasury.test.ts",
     "test:e2e": "tsx scripts/e2e-check.ts"
   },
   "dependencies": {

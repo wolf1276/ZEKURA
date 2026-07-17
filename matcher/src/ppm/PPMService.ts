@@ -91,6 +91,27 @@ export class PPMService {
    * owns applying a MatchingEngine result.
    */
   async attemptFill(order: Pick<Order, 'id' | 'asset' | 'side' | 'price' | 'amount' | 'payoutAddress'>): Promise<PpmFillOutcome> {
+    // PPM fills only run in the direction where the Treasury is the seller
+    // (order.side === 'BUY' -> settleWithProtocol's isBuy branch -> the
+    // contract pays out of its own already-deposited balance via
+    // sendUnshielded to the buyer's payoutAddress). The mirror direction
+    // (a resting SELL filled by the Treasury buying the asset) requires
+    // settleWithProtocol's receiveUnshielded branch, which needs the
+    // *seller's own wallet* to supply that asset as a transaction input.
+    // Every Treasury/PPM on-chain call is submitted and balanced by the
+    // Matcher's single operator wallet (see src/index.ts), which never
+    // custodies user funds and has no mechanism to receive or forward a
+    // seller-supplied input — there is no escrow or co-signing step
+    // anywhere in order creation/submission (see matcher/API.md's POST
+    // /orders body). Attempting it would either fail outright (operator
+    // wallet holds none of the asset) or, worse, silently debit the
+    // operator wallet's own balance while marking the seller's order
+    // FILLED without ever taking the seller's asset. Until a user-signed
+    // escrow leg exists for that direction, PPM fills are BUY-only.
+    if (order.side === 'SELL') {
+      return { filled: false, reason: 'Protocol liquidity fills are only available for buy orders.' };
+    }
+
     const onChainAssetKey = this.toOnChainAssetKey(order.asset);
     const snapshot = await this.marketDataService.getSnapshot(order.asset, this.statsWindowMs);
     const referencePrice = MarketDataService.referencePrice(snapshot);

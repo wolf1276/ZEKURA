@@ -508,6 +508,7 @@ intend to use:
 | `NEXT_PUBLIC_PROOF_SERVER_URL` | `http://127.0.0.1:6300` | Local proof server, used only when the connected wallet has no in-browser prover (e.g. Lace). |
 | `NEXT_PUBLIC_MATCHER_WS_URL` | `ws://localhost:4000/ws` | Matcher WebSocket feed, called directly from the browser. |
 | `MATCHER_API_URL` | `http://localhost:4000` | Matcher REST base URL, used server-side by the Next.js same-origin proxy routes (`app/api/matcher/**`). |
+| `NEXT_PUBLIC_ADMIN_ADDRESSES` | *(none)* | Comma-separated unshielded wallet addresses that see the Treasury page's admin funding UI. Client-side hint only — the real authorization boundary is the Matcher's own `MATCHER_ADMIN_ADDRESSES` allowlist plus a real wallet signature. Should match (a subset of) `MATCHER_ADMIN_ADDRESSES`. |
 
 The active network itself (Preview vs. Preprod) is **not** an env var — it's
 chosen at runtime by whatever network the connected wallet reports. See
@@ -681,7 +682,7 @@ contract are in [`matcher/API.md`](./matcher/API.md).
 | Network | Contract Address | Deployed |
 |---|---|---|
 | **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` (post-audit build) | 2026-07-15 |
-| **Preprod** (default network) | `7d1f1f67c3ccb1f757a0c1a1c2ef726946db724e2f92f2e0de7c73915e7eb9d1` (post-audit build) | 2026-07-16 |
+| **Preprod** (default network) | `20f760d5e29cd868a2d7a25872e71cb042d8f68130e932a13e5111e5136d05c9` (post-Treasury build, staged deploy — see Deployment.md) | 2026-07-17 |
 | Undeployed (local devnet) | not persistent — redeploy via `npm run setup` | — |
 
 Both networks run the **identical audited contract build**. See

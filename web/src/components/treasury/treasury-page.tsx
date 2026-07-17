@@ -2,7 +2,9 @@
 
 import { useState } from "react";
 import { encodeUserAddress } from "@midnight-ntwrk/ledger-v8";
+import { getNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import { toHex } from "@midnight-ntwrk/midnight-js-utils";
+import { MidnightBech32m, UnshieldedAddress } from "@midnight-ntwrk/wallet-sdk-address-format";
 import { AlertTriangle, ArrowDownToLine, ArrowUpFromLine, Droplets, Shield, Wallet } from "lucide-react";
 import { toast } from "sonner";
 import { PageShell, Card } from "@/components/layout/page-shell";
@@ -133,7 +135,11 @@ export function TreasuryPage() {
       const amount = toRawUnits(withdrawAmount);
       const recipientBech32 = withdrawTo.trim() || wallet?.unshieldedAddress;
       if (!recipientBech32) throw new Error("Enter a recipient address");
-      const recipientUserAddress = toHex(encodeUserAddress(recipientBech32));
+      // encodeUserAddress expects the hex UserAddress form, not a bech32m
+      // string — MidnightBech32m.parse(...).decode(...) is the conversion
+      // (see @midnight-ntwrk/wallet-sdk-address-format).
+      const recipientHex = MidnightBech32m.parse(recipientBech32).decode(UnshieldedAddress, getNetworkId()).hexString;
+      const recipientUserAddress = toHex(encodeUserAddress(recipientHex));
       const auth = await signAdminRequest();
       await withdrawTreasury({ auth, assetKey: nativeAssetKeyHex(), amount: amount.toString(), recipientUserAddress });
       toast.success("Withdrawal submitted — the Treasury will update once the transaction confirms.");

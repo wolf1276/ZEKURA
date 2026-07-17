@@ -5,6 +5,7 @@
 // this file is the glue between that format and the wallet SDK.
 
 import { Buffer } from 'buffer';
+import * as crypto from 'node:crypto';
 
 import * as Rx from 'rxjs';
 import * as ledger from '@midnight-ntwrk/ledger-v8';
@@ -58,6 +59,12 @@ export interface WalletContext {
   dustSecretKey: ReturnType<typeof ledger.DustSecretKey.fromSeed>;
   unshieldedKeystore: ReturnType<typeof createKeystore>;
   restored: { shielded: boolean; unshielded: boolean; dust: boolean };
+  /** sha256(seed) hex — carried through so persistWalletState can tag whatever it saves with the seed that actually owns it. See wallet-state.ts's PersistedWalletState.seedFingerprint. */
+  seedFingerprint: string;
+}
+
+function fingerprintSeed(seed: string): string {
+  return crypto.createHash('sha256').update(seed, 'hex').digest('hex');
 }
 
 export interface CreateWalletOptions {
@@ -93,9 +100,27 @@ export async function createWallet(opts: CreateWalletOptions): Promise<WalletCon
   const dustSecretKey = ledger.DustSecretKey.fromSeed(keys[Roles.Dust]);
   const unshieldedKeystore = createKeystore(keys[Roles.NightExternal], networkId);
 
-  const saved: PersistedWalletState = opts.restore === false
+  const seedFingerprint = fingerprintSeed(opts.seed);
+  const loaded: PersistedWalletState = opts.restore === false
     ? {}
     : loadWalletState(opts.network, { cwd: opts.cwd });
+  // A cache directory on disk can outlive the seed it was captured for —
+  // e.g. .midnight-state.json (which holds the real seed) is lost or
+  // regenerated while .midnight-wallet-state/<network>/ (gitignored,
+  // survives independently) is not. Restoring that stale state produces a
+  // wallet that *reports* balances/UTXOs it cannot actually sign for, since
+  // signing uses the keys derived from the *current* seed — this is not
+  // hypothetical, it's exactly what "attempted to spend Dust UTXO that's
+  // not in the wallet state" means when it happens. An absent fingerprint
+  // (old-format cache from before this check existed) is treated the same
+  // as a mismatch: untrusted, never assumed valid.
+  const fingerprintMatches = loaded.seedFingerprint === seedFingerprint;
+  if (!fingerprintMatches && (loaded.shielded !== undefined || loaded.unshielded !== undefined || loaded.dust !== undefined)) {
+    process.stderr.write(
+      `  ⚠ .midnight-wallet-state/${opts.network} does not match this seed (stale cache from a different wallet); ignoring it and starting a fresh sync.\n`,
+    );
+  }
+  const saved: PersistedWalletState = fingerprintMatches ? loaded : {};
 
   const restored = { shielded: false, unshielded: false, dust: false };
 
@@ -156,7 +181,7 @@ export async function createWallet(opts: CreateWalletOptions): Promise<WalletCon
 
   await wallet.start(shieldedSecretKeys, dustSecretKey);
 
-  return { wallet, shieldedSecretKeys, dustSecretKey, unshieldedKeystore, restored };
+  return { wallet, shieldedSecretKeys, dustSecretKey, unshieldedKeystore, restored, seedFingerprint };
 }
 
 /**
@@ -186,6 +211,7 @@ export async function persistWalletState(
     }
   }
 
+  next.seedFingerprint = ctx.seedFingerprint;
   saveWalletState(network, next, { cwd });
 }
 
