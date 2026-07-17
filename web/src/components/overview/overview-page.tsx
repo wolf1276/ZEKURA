@@ -18,7 +18,7 @@ import { Footer } from "@/components/layout/footer";
 import { OrderStatusBadge } from "@/components/trade/order-status-badge";
 import { useWallet } from "@/wallet/walletHooks";
 import { useTreasury } from "@/hooks/use-treasury";
-import { matcher } from "@/services/matcher/matcherClient";
+import { matcher, fetchTreasuryActivityBackfill } from "@/services/matcher/matcherClient";
 import { ASSET_PAIRS } from "@/lib/mock/market";
 import {
   formatAmount,
@@ -50,6 +50,11 @@ const ACTIVITY_LABEL: Record<ActivityEvent["kind"], string> = {
   ORDER_CANCELLED: "Order cancelled",
   ORDER_EXPIRED: "Order expired",
   ORDER_FAILED: "Order failed",
+  TREASURY_DEPOSITED: "Treasury deposit",
+  TREASURY_WITHDRAWN: "Treasury withdrawal",
+  TREASURY_RESERVED: "Liquidity reserved",
+  TREASURY_RELEASED: "Liquidity released",
+  TREASURY_EXECUTED: "Protocol fill executed",
 };
 
 function tokenLabel(key: string): string {
@@ -167,6 +172,17 @@ export function OverviewPage() {
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
 
   useEffect(() => matcher.subscribe(setOrders), []);
+  useEffect(() => {
+    let cancelled = false;
+    fetchTreasuryActivityBackfill(6).then((backfill) => {
+      if (!cancelled && backfill.length > 0) {
+        setActivity((prev) => [...prev, ...backfill].slice(0, 6));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   useEffect(
     () =>
       matcher.subscribeActivity((e) =>

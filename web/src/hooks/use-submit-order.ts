@@ -153,6 +153,7 @@ export function useSubmitOrder() {
           createdAt: order.createdAt,
           expiresAt: order.expiresAt,
           expiryLabel: input.expiry,
+          ownerId: order.ownerId,
         };
 
         setState({ phase: "success", order: uiOrder });

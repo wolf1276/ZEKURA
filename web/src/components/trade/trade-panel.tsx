@@ -17,11 +17,17 @@ import { useNetworkContext } from "@/network/networkContext";
 import { ASSET_PAIRS } from "@/lib/mock/market";
 import { formatAmount } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { matcher } from "@/services/matcher/matcherClient";
+import { pureCircuits } from "@/services/midnight/exchangeContract";
+import { getOrCreateOwnerSecret } from "@/services/midnight/ownerSecret";
+import { toHex } from "@midnight-ntwrk/midnight-js-utils";
 import type { AssetPair, ExpiryOption, Order, OrderSide } from "@/lib/types";
 
 const EXPIRY_OPTIONS: ExpiryOption[] = ["10m", "30m", "1h", "GTC"];
 const FEE_BPS = 10; // 0.10%
 const INTEGER_FORMAT = /^[0-9]+$/;
+/** Statuses that still hold funds against a future fill/settlement — mirrors orders-page.tsx's "Open" tab. */
+const UNSETTLED_STATUSES: ReadonlySet<Order["status"]> = new Set(["OPEN", "MATCHED", "SETTLING"]);
 
 interface TradePanelProps {
   pair: AssetPair;
@@ -49,7 +55,47 @@ export function TradePanel({
   const success = submitState.phase === "success";
   const submitError = submitState.phase === "error" ? submitState.message : null;
 
-  const availableBalance = Number(wallet.balanceFor(side === "BUY" ? pair.quote : pair.base));
+  // getOrCreateOwnerSecret() touches localStorage, so it (like the rest of
+  // this component's live order state) can only run client-side after mount
+  // — never during render, which SSR/static prerendering of this page also
+  // runs (see services/midnight/ownerSecret.ts).
+  const [myOwnerId, setMyOwnerId] = useState("");
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time client-only read from localStorage (getOrCreateOwnerSecret), not derivable during render without desyncing SSR output; same pattern as settings-page.tsx's mounted-gate
+    setMyOwnerId(toHex(pureCircuits.deriveOwnerId(getOrCreateOwnerSecret())));
+  }, []);
+  const [orders, setOrders] = useState<Order[]>([]);
+  useEffect(() => matcher.subscribe(setOrders), []);
+
+  // Funds already committed to this browser's own resting orders for the
+  // current pair — subtracted below so a second SELL (or BUY) can't be
+  // submitted against the same balance an earlier still-open order already
+  // claims. The Matcher/contract never escrow anything themselves (orders
+  // are a commitment registry, not custodial — see README.md's Non-Custodial
+  // feature note), so this is the only place that accounting happens.
+  const reservedForPair = useMemo(() => {
+    let base = 0;
+    let quote = 0;
+    for (const o of orders) {
+      if (o.ownerId !== myOwnerId || o.pair !== `${pair.base}/${pair.quote}` || !UNSETTLED_STATUSES.has(o.status)) {
+        continue;
+      }
+      const amount = Number(o.amount);
+      if (o.side === "SELL") {
+        base += amount;
+      } else {
+        const price = Number(o.price);
+        quote += amount * price * (1 + FEE_BPS / 10_000);
+      }
+    }
+    return { base, quote };
+  }, [orders, myOwnerId, pair.base, pair.quote]);
+
+  const rawBalance = Number(wallet.balanceFor(side === "BUY" ? pair.quote : pair.base));
+  const availableBalance = Math.max(
+    0,
+    rawBalance - (side === "BUY" ? reservedForPair.quote : reservedForPair.base),
+  );
   const balanceSymbol = side === "BUY" ? pair.quote : pair.base;
 
   const parsedAmount = Number(amount);

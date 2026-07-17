@@ -37,6 +37,8 @@ export interface Order {
   createdAt: number;
   expiresAt: string;
   expiryLabel: ExpiryOption;
+  /** Hex-encoded deriveOwnerId(...) output — lets the UI recognize which open orders are this browser's own (see services/midnight/ownerSecret.ts), e.g. to compute reserved/locked balance. */
+  ownerId: string;
 }
 
 export interface Match {
@@ -56,17 +58,24 @@ export type ActivityKind =
   | "ORDER_FILLED"
   | "ORDER_CANCELLED"
   | "ORDER_EXPIRED"
-  | "ORDER_FAILED";
+  | "ORDER_FAILED"
+  | "TREASURY_DEPOSITED"
+  | "TREASURY_WITHDRAWN"
+  | "TREASURY_RESERVED"
+  | "TREASURY_RELEASED"
+  | "TREASURY_EXECUTED";
 
+/** Order-lifecycle fields are only present for ORDER_* kinds; Treasury/PPM fields only for TREASURY_* kinds. */
 export interface ActivityEvent {
   id: string;
   kind: ActivityKind;
-  orderId: string;
-  pair: string;
-  side: OrderSide;
-  amount: string;
-  price: string;
   timestamp: number;
+  amount: string;
+  orderId?: string;
+  pair?: string;
+  side?: OrderSide;
+  price?: string;
+  txId?: string | null;
 }
 
 export type Timeframe = "1m" | "5m" | "15m" | "1H" | "4H" | "1D";

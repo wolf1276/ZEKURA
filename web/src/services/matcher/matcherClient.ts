@@ -13,12 +13,44 @@
  */
 import { ASSET_PAIRS } from "@/lib/mock/market";
 import type { ActivityEvent, ActivityKind, Order, OrderStatus } from "@/lib/types";
-import type { MatcherEitherAsset, MatcherOrder, MatcherWsMessage } from "@/types/matcher";
+import type { MatcherEitherAsset, MatcherOrder, MatcherTreasuryEvent, MatcherWsMessage } from "@/types/matcher";
 import * as api from "./api";
 import { MatcherApiError } from "./api";
 
+const TREASURY_HISTORY_KIND_TO_ACTIVITY: Record<MatcherTreasuryEvent["kind"], ActivityKind> = {
+  DEPOSIT: "TREASURY_DEPOSITED",
+  WITHDRAW: "TREASURY_WITHDRAWN",
+  RESERVE: "TREASURY_RESERVED",
+  RELEASE: "TREASURY_RELEASED",
+  EXECUTE: "TREASURY_EXECUTED",
+};
+
+/** Reconstructs Treasury/PPM Activity rows from the Matcher's persisted `/treasury/history` — the only durable, replayable source for those events, since the live WS feed alone goes blank on every page reload. Order-lifecycle activity has no equivalent persisted feed yet (see matcher/src/api/*.ts) and stays live-only. */
+export function treasuryEventToActivity(e: MatcherTreasuryEvent): ActivityEvent {
+  return {
+    id: `treasury-history-${e.id}`,
+    kind: TREASURY_HISTORY_KIND_TO_ACTIVITY[e.kind],
+    pair: "tNIGHT",
+    amount: e.amount,
+    txId: e.txId,
+    timestamp: e.createdAt,
+  };
+}
+
+export async function fetchTreasuryActivityBackfill(limit = 50): Promise<ActivityEvent[]> {
+  try {
+    const { events } = await api.getTreasuryHistory(limit);
+    return events.map(treasuryEventToActivity).sort((a, b) => b.timestamp - a.timestamp);
+  } catch {
+    // Same non-fatal treatment as refreshOpenOrders below — live events still arrive via WS.
+    return [];
+  }
+}
+
 const WS_URL = process.env.NEXT_PUBLIC_MATCHER_WS_URL?.trim() || "ws://localhost:4000/ws";
 const RECONNECT_DELAY_MS = 3000;
+/** Safety net alongside the WS feed — same pattern/cadence as use-treasury.ts's own polling fallback, in case a WS message is missed during a reconnect or the socket never connects at all. */
+const POLL_FALLBACK_MS = 30_000;
 
 /** The Matcher only knows asset IDs, not this app's display symbols — resolve back via lib/mock/market.ts. */
 function pairLabelFor(asset: MatcherEitherAsset): string {
@@ -42,6 +74,7 @@ function toOrder(o: MatcherOrder): Order {
     // (formatExpiry) derives the label from expiresAt directly, so this is
     // never read for real orders.
     expiryLabel: "GTC",
+    ownerId: o.ownerId,
   };
 }
 
@@ -53,6 +86,10 @@ const WS_KIND_TO_ACTIVITY: Partial<Record<MatcherWsMessage["type"], ActivityKind
   "order.cancelled": "ORDER_CANCELLED",
   "order.expired": "ORDER_EXPIRED",
   "order.failed": "ORDER_FAILED",
+  "treasury.deposited": "TREASURY_DEPOSITED",
+  "treasury.withdrawn": "TREASURY_WITHDRAWN",
+  "treasury.reserved": "TREASURY_RESERVED",
+  "treasury.released": "TREASURY_RELEASED",
 };
 
 type OrderListener = (orders: Order[]) => void;
@@ -114,6 +151,7 @@ class MatcherClient {
     this.started = true;
     void this.refreshOpenOrders();
     this.connectSocket();
+    window.setInterval(() => void this.refreshOpenOrders(), POLL_FALLBACK_MS);
   }
 
   private async refreshOpenOrders() {
@@ -223,6 +261,18 @@ class MatcherClient {
         this.emitActivity(kind, order.id, order.asset, order.price, order.amount);
         return;
       }
+      case "treasury.deposited":
+      case "treasury.withdrawn": {
+        const { amount, txId } = message.payload;
+        this.emitTreasuryActivity(kind, amount, txId);
+        return;
+      }
+      case "treasury.reserved":
+      case "treasury.released": {
+        const { amount } = message.payload;
+        this.emitTreasuryActivity(kind, amount, null);
+        return;
+      }
       default:
         return;
     }
@@ -260,6 +310,19 @@ class MatcherClient {
       side: order?.side ?? "BUY",
       amount,
       price,
+      timestamp: Date.now(),
+    };
+    for (const listener of this.activityListeners) listener(event);
+  }
+
+  /** Treasury/PPM events have no orderId/pair/side — the demo Treasury only ever moves tNIGHT (see components/treasury/treasury-page.tsx), so that's hardcoded as the display symbol here rather than resolving assetKey generically. */
+  private emitTreasuryActivity(kind: ActivityKind, amount: string, txId: string | null) {
+    const event: ActivityEvent = {
+      id: `treasury-${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      kind,
+      pair: "tNIGHT",
+      amount,
+      txId,
       timestamp: Date.now(),
     };
     for (const listener of this.activityListeners) listener(event);

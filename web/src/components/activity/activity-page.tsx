@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Activity, Search } from "lucide-react";
 import { PageShell, Card } from "@/components/layout/page-shell";
 import { useWallet } from "@/wallet/walletHooks";
-import { matcher } from "@/services/matcher/matcherClient";
+import { matcher, fetchTreasuryActivityBackfill } from "@/services/matcher/matcherClient";
 import { formatOrderId, formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { ActivityEvent, ActivityKind } from "@/lib/types";
@@ -17,6 +17,11 @@ const LABEL: Record<ActivityKind, string> = {
   ORDER_CANCELLED: "Order Cancelled",
   ORDER_EXPIRED: "Order Expired",
   ORDER_FAILED: "Order Failed",
+  TREASURY_DEPOSITED: "Treasury Deposit",
+  TREASURY_WITHDRAWN: "Treasury Withdrawal",
+  TREASURY_RESERVED: "Liquidity Reserved",
+  TREASURY_RELEASED: "Liquidity Released",
+  TREASURY_EXECUTED: "Protocol Fill Executed",
 };
 
 const STATUS: Record<ActivityKind, { label: string; className: string }> = {
@@ -27,12 +32,37 @@ const STATUS: Record<ActivityKind, { label: string; className: string }> = {
   ORDER_CANCELLED: { label: "Cancelled", className: "text-muted-foreground" },
   ORDER_EXPIRED: { label: "Expired", className: "text-muted-foreground" },
   ORDER_FAILED: { label: "Failed", className: "text-destructive" },
+  TREASURY_DEPOSITED: { label: "Success", className: "text-primary" },
+  TREASURY_WITHDRAWN: { label: "Success", className: "text-primary" },
+  TREASURY_RESERVED: { label: "Pending", className: "text-muted-foreground" },
+  TREASURY_RELEASED: { label: "Success", className: "text-primary" },
+  TREASURY_EXECUTED: { label: "Success", className: "text-primary" },
 };
+
+const TREASURY_KINDS: ReadonlySet<ActivityKind> = new Set([
+  "TREASURY_DEPOSITED",
+  "TREASURY_WITHDRAWN",
+  "TREASURY_RESERVED",
+  "TREASURY_RELEASED",
+  "TREASURY_EXECUTED",
+]);
 
 export function ActivityPage() {
   const { status, wallet } = useWallet();
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchTreasuryActivityBackfill().then((backfill) => {
+      if (!cancelled && backfill.length > 0) {
+        setEvents((prev) => [...prev, ...backfill].slice(0, 100));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(
     () =>
@@ -47,7 +77,7 @@ export function ActivityPage() {
     if (!q) return events;
     return events.filter(
       (e) =>
-        e.pair.toLowerCase().includes(q) ||
+        (e.pair ?? "").toLowerCase().includes(q) ||
         LABEL[e.kind].toLowerCase().includes(q),
     );
   }, [events, query]);
@@ -113,10 +143,12 @@ export function ActivityPage() {
                         </span>
                       </div>
                       <p className="text-sm text-foreground/80">
-                        {e.pair} · {e.side === "BUY" ? "Buy" : "Sell"}
+                        {TREASURY_KINDS.has(e.kind)
+                          ? `${e.pair} · ${e.amount}`
+                          : `${e.pair} · ${e.side === "BUY" ? "Buy" : "Sell"}`}
                       </p>
                       <p className="mt-1 font-mono text-[11px] text-muted-foreground">
-                        Order: {formatOrderId(e.orderId)}
+                        {e.orderId ? `Order: ${formatOrderId(e.orderId)}` : e.txId ? `Tx: ${formatOrderId(e.txId)}` : null}
                       </p>
                     </Card>
                   </li>

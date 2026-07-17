@@ -57,6 +57,11 @@ export const ACTIVITY_LABEL: Record<ActivityKind, string> = {
   ORDER_CANCELLED: "Cancelled",
   ORDER_EXPIRED: "Expired",
   ORDER_FAILED: "Failed",
+  TREASURY_DEPOSITED: "Treasury Deposit",
+  TREASURY_WITHDRAWN: "Treasury Withdrawal",
+  TREASURY_RESERVED: "Liquidity Reserved",
+  TREASURY_RELEASED: "Liquidity Released",
+  TREASURY_EXECUTED: "Protocol Fill Executed",
 };
 
 /** Converts a trade-panel expiry selection into a Matcher-facing unix-second deadline. */
