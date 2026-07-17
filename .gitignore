@@ -65,7 +65,13 @@ matcher/data/
 # Midnight wallet sync state (per-network serialized wallet state cache)
 .midnight-wallet-state/
 
+# Personal Claude Code permission overrides (not team-shared)
+.claude/settings.local.json
+
 # Local devnet node database (container-managed volume mirror)
 midnight-level-db/
 .vercel
 .env*
+
+# tZKR token deployment record (per-network address), like .midnight-state.json
+.midnight-tzkr.json

@@ -10,9 +10,13 @@
   ],
   "scripts": {
     "compile": "compact compile contracts/exchange.compact contracts/managed/exchange",
+    "compile:tzkr": "compact compile contracts/tzkr-token.compact contracts/managed/tzkr-token",
     "build": "npx tsc --noEmit",
     "setup": "npx tsx src/setup.ts",
+    "setup:tzkr": "npm run compile:tzkr && npm run deploy:tzkr && npm run mint:tzkr",
     "deploy": "npx tsx src/deploy.ts",
+    "deploy:tzkr": "npx tsx src/deploy-tzkr.ts",
+    "mint:tzkr": "npx tsx src/mint-tzkr.ts",
     "cli": "npx tsx src/cli.ts",
     "check-balance": "npx tsx src/check-balance.ts",
     "network": "npx tsx src/network.ts",
