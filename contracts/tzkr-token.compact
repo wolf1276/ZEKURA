@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: MIT
+// ---------------------------------------------------------------------------
+// Zekura Test Token (tZKR)
+// ---------------------------------------------------------------------------
+//
+// A project-owned, ERC-20-style fungible token used as the demo trading asset
+// for Zekura's default **tNIGHT / tZKR** pair. It replaces the earlier
+// placeholder "tDUST" demo asset naming (tDUST is Midnight's real network fee
+// resource and is intentionally left untouched elsewhere).
+//
+// All token accounting — balances, transfers, allowances, and minting — comes
+// from the official **OpenZeppelin Contracts for Compact** `FungibleToken`
+// module. This contract does NOT reimplement any of it; it only composes that
+// module with `Ownable` and exposes an owner-gated `mint` for seeding the demo
+// supply. See:
+//   - https://docs.midnight.network/sdks/community/openzeppelin-compact-contracts
+//   - https://github.com/OpenZeppelin/compact-contracts   (v0.3.0-alpha)
+//
+// The library modules are vendored (not yet published to npm) under
+//   contracts/lib/openzeppelin-compact-contracts/
+// see that directory's VENDOR_COMMIT.txt for the exact upstream revision.
+// ---------------------------------------------------------------------------
+
+pragma language_version >= 0.23.0;
+
+import CompactStandardLibrary;
+
+// OpenZeppelin modules, imported with a prefix per the library's
+// module/contract composition convention. A leading-underscore library
+// circuit (e.g. `_mint`) is reached as `FungibleToken__mint` — the double
+// underscore is intentional.
+import "lib/openzeppelin-compact-contracts/access/Ownable" prefix Ownable_;
+import "lib/openzeppelin-compact-contracts/token/FungibleToken" prefix FungibleToken_;
+
+// Re-export the standard-library address/Either types so the generated
+// TypeScript bindings surface them to the deploy/mint scripts.
+export { ContractAddress, Either, Maybe };
+
+// ---------------------------------------------------------------------------
+// Constructor
+// ---------------------------------------------------------------------------
+//
+// Deploy-time configuration only: the initial owner (admin) authorized to
+// `mint`, plus the token metadata. The deploy script (src/deploy-tzkr.ts)
+// passes the deployer wallet's own coin public key as the left branch of the
+// Either, and the canonical metadata:
+//     name    = "Zekura Test Token"
+//     symbol  = "tZKR"
+//     decimals = 6            (same convention as NIGHT's STAR unit)
+// Metadata is a constructor argument (not a source-level string literal)
+// because Compact has no `Opaque<"string">` literal — this mirrors the
+// OpenZeppelin FungibleToken docs example and the library's own MockFungibleToken.
+// The token starts with ZERO supply — the demo supply is minted separately by
+// src/mint-tzkr.ts, mirroring how the Treasury starts empty and is funded by a
+// later, explicit transaction.
+constructor(
+  initOwner: Either<Bytes<32>, ContractAddress>,
+  name_: Opaque<"string">,
+  symbol_: Opaque<"string">,
+  decimals_: Uint<8>,
+) {
+  Ownable_initialize(initOwner);
+  FungibleToken_initialize(name_, symbol_, decimals_);
+}
+
+// ---------------------------------------------------------------------------
+// Read-only metadata & balances (delegated to FungibleToken)
+// ---------------------------------------------------------------------------
+
+export circuit name(): Opaque<"string"> {
+  return FungibleToken_name();
+}
+
+export circuit symbol(): Opaque<"string"> {
+  return FungibleToken_symbol();
+}
+
+export circuit decimals(): Uint<8> {
+  return FungibleToken_decimals();
+}
+
+export circuit totalSupply(): Uint<128> {
+  return FungibleToken_totalSupply();
+}
+
+export circuit balanceOf(account: Either<Bytes<32>, ContractAddress>): Uint<128> {
+  return FungibleToken_balanceOf(account);
+}
+
+export circuit owner(): Either<Bytes<32>, ContractAddress> {
+  return Ownable_owner();
+}
+
+// ---------------------------------------------------------------------------
+// Transfers & allowances (delegated to FungibleToken)
+// ---------------------------------------------------------------------------
+
+export circuit transfer(to: Either<Bytes<32>, ContractAddress>, value: Uint<128>): Boolean {
+  return FungibleToken_transfer(to, value);
+}
+
+export circuit approve(spender: Either<Bytes<32>, ContractAddress>, value: Uint<128>): Boolean {
+  return FungibleToken_approve(spender, value);
+}
+
+export circuit allowance(
+  owner: Either<Bytes<32>, ContractAddress>,
+  spender: Either<Bytes<32>, ContractAddress>,
+): Uint<128> {
+  return FungibleToken_allowance(owner, spender);
+}
+
+export circuit transferFrom(
+  fromAddress: Either<Bytes<32>, ContractAddress>,
+  to: Either<Bytes<32>, ContractAddress>,
+  value: Uint<128>,
+): Boolean {
+  return FungibleToken_transferFrom(fromAddress, to, value);
+}
+
+// ---------------------------------------------------------------------------
+// Owner-gated demo mint / burn
+// ---------------------------------------------------------------------------
+//
+// `mint` is how the demo supply is created — src/mint-tzkr.ts calls it from the
+// owner (deployer) wallet. Gated by Ownable so only the configured admin can
+// mint. `_mint` (safe variant) rejects contract-address recipients.
+export circuit mint(account: Either<Bytes<32>, ContractAddress>, value: Uint<128>): [] {
+  Ownable_assertOnlyOwner();
+  FungibleToken__mint(account, value);
+}
+
+export circuit burn(account: Either<Bytes<32>, ContractAddress>, value: Uint<128>): [] {
+  Ownable_assertOnlyOwner();
+  FungibleToken__burn(account, value);
+}
