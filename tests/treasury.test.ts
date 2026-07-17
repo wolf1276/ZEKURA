@@ -153,6 +153,10 @@ const OTHER_SECRET_HEX = 'bb'.repeat(32);
 
 const ASSET_A = bytes32(0xa1); // stands in for a token type (e.g. tNIGHT's real nativeToken() bytes on a live network)
 const ASSET_B = bytes32(0xb2);
+// nativeToken() is the all-zeros token type — the key settleWithProtocol's
+// NIGHT payment leg reads/writes treasuryBalances under. A traded asset's
+// deriveAssetKey() hash can never be all zeros, so there is no collision.
+const NIGHT_KEY = bytes32(0x00);
 
 // Either<ContractAddress, UserAddress> — Left arm (ContractAddress), matching
 // the struct-of-{bytes} shape sendUnshielded's recipient parameter expects.
@@ -466,6 +470,7 @@ async function main() {
     reservedPrice?: bigint;
     expiresAt?: bigint;
     treasuryDeposit?: bigint;
+    nightDeposit?: bigint;
   }) {
     const { c, quoteId } = opts;
     const orderId = bytes32(0x90);
@@ -474,6 +479,11 @@ async function main() {
     const commitment = computeCommitment(details, blinding);
 
     c.depositTreasury(ASSET_A_KEY, opts.treasuryDeposit ?? 10_000n);
+    // Seed NIGHT liquidity so the SELL-side payment leg (protocol pays the
+    // seller in NIGHT) has funds to draw on; harmless for BUY fills.
+    if (opts.nightDeposit !== undefined) {
+      c.depositTreasury(NIGHT_KEY, opts.nightDeposit);
+    }
     c.createOrder(orderId, commitment);
     c.registerWitness(orderId, details, blinding);
     c.reserveLiquidity(
@@ -489,33 +499,64 @@ async function main() {
   test('settleWithProtocol: fills a resting buy order against protocol liquidity, moves the Treasury balance', () => {
     const c = makeContract();
     const quoteId = bytes32(0xa0);
+    // amount 500, reserved price 1000 -> NIGHT payment leg is 500 * 1000.
     const { orderId } = makeOpenOrderAgainstReservation({ c, quoteId, treasuryDeposit: 10_000n });
 
     c.settleWithProtocol(orderId, quoteId, CONTRACT_RECIPIENT);
 
     assertEq(c.getOrder(orderId).state, OrderState.FILLED, 'order FILLED');
     assertEq(readReservation(c.ledger(), quoteId).state, ReservationState.EXECUTED, 'reservation EXECUTED');
-    // Buy order: protocol is the seller, balance goes down by the filled amount.
-    assertEq(readBalance(c.ledger(), ASSET_A_KEY), 10_000n - 500n, 'treasury balance debited for buy fill');
+    // Buy order: protocol is the seller, asset balance goes down by the filled amount.
+    assertEq(readBalance(c.ledger(), ASSET_A_KEY), 10_000n - 500n, 'treasury asset balance debited for buy fill');
     assertEq(readReserved(c.ledger(), ASSET_A_KEY), 0n, 'reservation no longer counted as reserved');
+    // NIGHT payment leg: protocol receives amount*price NIGHT from the buyer,
+    // so its NIGHT balance is credited (starts at 0 here).
+    assertEq(readBalance(c.ledger(), NIGHT_KEY), 500n * 1_000n, 'treasury NIGHT balance credited by buyer payment');
   });
 
   test('settleWithProtocol: fills a resting sell order against protocol liquidity, credits the Treasury balance', () => {
     const c = makeContract();
     const quoteId = bytes32(0xa1);
+    // Sell fill pays the seller 500 * 900 NIGHT — seed enough NIGHT liquidity.
     const { orderId } = makeOpenOrderAgainstReservation({
       c,
       quoteId,
       orderOverrides: { isBuy: false, price: 900n },
       reservedPrice: 900n,
       treasuryDeposit: 10_000n,
+      nightDeposit: 1_000_000n,
     });
 
     c.settleWithProtocol(orderId, quoteId, CONTRACT_RECIPIENT);
 
     assertEq(c.getOrder(orderId).state, OrderState.FILLED, 'sell order FILLED');
-    // Sell order: protocol is the buyer, balance goes up by the filled amount.
-    assertEq(readBalance(c.ledger(), ASSET_A_KEY), 10_000n + 500n, 'treasury balance credited for sell fill');
+    // Sell order: protocol is the buyer, asset balance goes up by the filled amount.
+    assertEq(readBalance(c.ledger(), ASSET_A_KEY), 10_000n + 500n, 'treasury asset balance credited for sell fill');
+    // NIGHT payment leg: protocol pays the seller amount*price NIGHT, so its
+    // NIGHT balance is debited.
+    assertEq(readBalance(c.ledger(), NIGHT_KEY), 1_000_000n - 500n * 900n, 'treasury NIGHT balance debited by seller payment');
+  });
+
+  test('settleWithProtocol: rejects a sell fill when the Treasury holds insufficient NIGHT to pay the seller', () => {
+    const c = makeContract();
+    const quoteId = bytes32(0xa7);
+    // Sell fill owes 500 * 900 = 450_000 NIGHT, but only 100 NIGHT is on hand.
+    const { orderId } = makeOpenOrderAgainstReservation({
+      c,
+      quoteId,
+      orderOverrides: { isBuy: false, price: 900n },
+      reservedPrice: 900n,
+      treasuryDeposit: 10_000n,
+      nightDeposit: 100n,
+    });
+    assertThrows(
+      () => c.settleWithProtocol(orderId, quoteId, CONTRACT_RECIPIENT),
+      'Insufficient protocol NIGHT liquidity',
+      'sell fill with too little NIGHT',
+    );
+    // Nothing moved: the order is still open and the reservation still OPEN.
+    assertEq(c.getOrder(orderId).state, OrderState.OPEN, 'order stays OPEN on failed settle');
+    assertEq(readReservation(c.ledger(), quoteId).state, ReservationState.OPEN, 'reservation stays OPEN on failed settle');
   });
 
   test('settleWithProtocol: rejects when the reservation has expired', () => {
