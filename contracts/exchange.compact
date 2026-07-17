@@ -277,12 +277,6 @@ export circuit createOrder(orderId: Bytes<32>, commitment: Bytes<32>): [] {
   recordEvent(EventKind.ORDER_CREATED, id);
 }
 
-export circuit getOrder(orderId: Bytes<32>): OrderRecord {
-  const id = disclose(orderId);
-  assert(orders.member(id), "Order does not exist");
-  return orders.lookup(id);
-}
-
 export circuit cancelOrder(orderId: Bytes<32>): [] {
   const id = disclose(orderId);
 
@@ -615,15 +609,16 @@ export circuit settleWithProtocol(
   recordEvent(EventKind.ORDER_FILLED, oid);
 }
 
-// No getTreasuryBalance/getTreasuryReserved/getReservation read circuits:
-// treasuryBalances, treasuryReserved, and reservations are public ledger
-// Maps, so — exactly like getOrder()'s own callers already prefer doing for
-// `orders` (see matcher/ARCHITECTURE.md's security model: "read for free via
-// the indexer, never a paid getOrder() transaction") — every value here is
-// readable for free straight from the indexer's contract-state query,
-// without spending a transaction on a circuit whose only job would be to
-// echo back state that's already public. Every exported circuit also adds
-// real weight to the one-time contract-deployment transaction (a verifier
-// key per circuit); on this local devnet's block limits that bill comes due
-// immediately, which is what caught this — keeping the read surface off-chain
-// isn't just an optimization here, it's what makes deployment fit at all.
+// No getTreasuryBalance/getTreasuryReserved/getReservation/getOrder read
+// circuits: treasuryBalances, treasuryReserved, reservations, and orders are
+// all public ledger Maps, so every caller reads them for free straight from
+// the indexer's contract-state query (see matcher/ARCHITECTURE.md's security
+// model and matcher/src/index.ts's onChainReader.getOrder) instead of
+// spending a transaction on a circuit whose only job would be to echo back
+// state that's already public. Every exported circuit also adds real weight
+// to the one-time contract-deployment transaction (a verifier key per
+// circuit); on Preprod's block weight limit that bill comes due immediately
+// — the original 3 getters were dropped for this reason, and getOrder
+// followed once the NIGHT-payment-leg/PPM additions pushed the deploy
+// transaction back over the limit. Keeping the read surface off-chain isn't
+// just an optimization here, it's what makes deployment fit at all.

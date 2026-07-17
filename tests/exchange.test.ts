@@ -225,10 +225,14 @@ async function main() {
         const r = contract.circuits.cancelOrder(ctx, orderId);
         ctx = r.context;
       },
+      // getOrder was dropped as an exported circuit (block-limit reduction —
+      // see contracts/exchange.compact); orders is a public ledger Map, read
+      // directly instead of via a paid circuit, mirroring what the Matcher
+      // itself already does (matcher/src/index.ts's onChainReader.getOrder).
       getOrder(orderId: Uint8Array) {
-        const r = contract.circuits.getOrder(ctx, orderId);
-        ctx = r.context;
-        return r.result;
+        const l = ledger(ctx.currentQueryContext.state);
+        if (!l.orders.member(orderId)) throw new Error('Order does not exist');
+        return l.orders.lookup(orderId);
       },
       // expireOrder/settle both read the current block time (via
       // blockTimeGte, backed by QueryContext.block.secondsSinceEpoch) to

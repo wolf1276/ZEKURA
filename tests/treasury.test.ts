@@ -146,6 +146,13 @@ function readReservation(l: any, quoteId: Uint8Array): any {
   if (!l.reservations.member(quoteId)) throw new Error('Reservation does not exist');
   return l.reservations.lookup(quoteId);
 }
+// getOrder was dropped as an exported circuit for the same block-limit
+// reason as getTreasuryBalance/getTreasuryReserved/getReservation above —
+// orders is a public ledger Map, read directly instead of via a paid circuit.
+function readOrder(l: any, orderId: Uint8Array): any {
+  if (!l.orders.member(orderId)) throw new Error('Order does not exist');
+  return l.orders.lookup(orderId);
+}
 
 const CALLER_PK_HEX = '00'.repeat(32);
 const ADMIN_SECRET_HEX = 'aa'.repeat(32);
@@ -259,7 +266,7 @@ async function main() {
       // on why: those circuits were dropped to fit the deploy transaction
       // under this devnet's block limit).
       createOrder: (orderId: Uint8Array, commitment: Uint8Array) => call('createOrder', orderId, commitment),
-      getOrder: (orderId: Uint8Array) => call('getOrder', orderId),
+      getOrder: (orderId: Uint8Array) => readOrder(ledger(ctx.currentQueryContext.state), orderId),
       registerWitness: (orderId: Uint8Array, details: OrderDetailsValue, blinding: Uint8Array) => {
         orderStore.set(Buffer.from(orderId).toString('hex'), { details, blinding });
       },

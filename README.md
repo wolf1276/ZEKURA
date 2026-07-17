@@ -859,14 +859,15 @@ contract are in [`matcher/API.md`](./matcher/API.md).
 | Network | Contract Address | Deployed |
 |---|---|---|
 | **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` (post-audit build) | 2026-07-15 |
-| **Preprod** (default network) | `20f760d5e29cd868a2d7a25872e71cb042d8f68130e932a13e5111e5136d05c9` (post-Treasury build, all 13 circuits, staged deploy — see below and Deployment.md) | 2026-07-17 |
+| **Preprod** (default network) | `831aa0d2c2b49286f0736bb6f60b0d8b90aa09e043930e5182a129428a456734` (NIGHT-payment-leg + SELL-PPM build, 12 circuits — see below and Deployment.md) | 2026-07-17 |
+| **Preprod — tZKR token** | `461009399dcd6e196376c3e8d470f8ba801a1d0d9262ead39a0684f500f85f89` (`contracts/tzkr-token.compact`) | 2026-07-17 |
 | Undeployed (local devnet) | not persistent — redeploy via `npm run setup` | — |
 
-**The two networks currently run different builds.** Preprod runs the full
-post-Treasury contract (13 circuits, Treasury/PPM included). Preview is
-**stale** — it still runs the pre-Treasury 5-circuit build from 2026-07-15
-and has no Treasury/PPM circuits at all; redeploying it with the same
-staged-deploy process is tracked in ["Roadmap"](#roadmap). See
+**The two networks currently run different builds.** Preprod runs the latest
+contract (Treasury/PPM plus a real NIGHT payment leg on `settleWithProtocol`
+and SELL-side PPM fills). Preview is **stale** — it still runs the
+pre-Treasury 5-circuit build from 2026-07-15 and has none of the above;
+redeploying it is tracked in ["Roadmap"](#roadmap). See
 [`Deployment.md`](./Deployment.md) for the full deployment record (deployer
 addresses, funding, and every verification pass) and [`AUDIT.md`](./AUDIT.md)
 for the security review — which predates the Treasury/PPM module and does
@@ -879,12 +880,15 @@ npm run compile
 ```
 
 Compiles [`contracts/exchange.compact`](./contracts/exchange.compact) to
-`contracts/managed/exchange/` — 13 circuits (`createOrder`, `getOrder`,
-`cancelOrder`, `expireOrder`, `settle`, `addAdmin`, `removeAdmin`,
-`depositTreasury`, `withdrawTreasury`, `reserveLiquidity`,
-`releaseLiquidity`, `releaseExpiredLiquidity`, `settleWithProtocol`), plus 3
-exported `pure` circuits (`deriveOwnerId`, `deriveAssetKey`, `deriveAdminId`),
-compiler `0.31.1`, language version `0.23.0`, runtime `0.16.0`.
+`contracts/managed/exchange/` — 12 circuits (`createOrder`, `cancelOrder`,
+`expireOrder`, `settle`, `addAdmin`, `removeAdmin`, `depositTreasury`,
+`withdrawTreasury`, `reserveLiquidity`, `releaseLiquidity`,
+`releaseExpiredLiquidity`, `settleWithProtocol`), plus 3 exported `pure`
+circuits (`deriveOwnerId`, `deriveAssetKey`, `deriveAdminId`), compiler
+`0.31.1`, language version `0.23.0`, runtime `0.16.0`. (`getOrder` was
+dropped 2026-07-17 — see "Staged deployment" below; order state is read for
+free via the indexer instead, exactly like the Treasury getters already
+were.)
 
 ### Deploy
 
@@ -915,8 +919,23 @@ A single `deployContract` transaction for the full 13-circuit contract
 exceeds Midnight Preprod's per-transaction block-weight limit
 (`Transaction would exhaust the block limits`) — registering 13 circuits'
 verifier keys in one transaction is simply too much weight, independent of
-anything about this contract's logic. **No functionality was removed** to
-work around this; instead the contract is deployed in stages:
+anything about this contract's logic.
+
+**2026-07-17/18 update:** the NIGHT-payment-leg/SELL-PPM redeploy hit this
+same limit again at 13 circuits. Rather than re-running the staged-deploy
+process below, an audit of every circuit's real call sites (grepped across
+`web/`, `matcher/`, `scripts/` — test-file circuit-simulator calls don't
+count) found `getOrder` was never invoked as an actual on-chain transaction
+anywhere; the Matcher already reads order state for free via the indexer
+(`matcher/src/index.ts`'s `onChainReader.getOrder`), the same free-read
+pattern already used for the Treasury getters below. Dropping it brought the
+contract to 12 circuits, which fit in a single ordinary `deployContract`
+transaction — no staging needed for this particular deploy. The staged
+process below remains the fallback if a future addition pushes the count
+back over the limit and there's no more dead weight left to trim; **no
+user-visible functionality was removed** by dropping `getOrder` (order state
+is still fully readable, just for free instead of via a paid circuit) —
+instead the contract is deployed in stages when trimming isn't enough:
 
 1. **Core circuits are deployed first.** `scripts/deploy-staged.ts` deploys a
    reduced build of `contracts/exchange.compact` truncated right after
@@ -948,7 +967,6 @@ sequence and independent on-chain verification.
 | Circuit | Authorization | Purpose |
 |---|---|---|
 | `createOrder(orderId, commitment)` | None — permissionless registration | Registers a new `OPEN` order's commitment |
-| `getOrder(orderId)` | None — public read | Returns `{commitment, state}` (prefer the indexer for reads; this costs a full transaction) |
 | `cancelOrder(orderId)` | `deriveOwnerId(ownerSecretKey()) == details.owner` | Owner-only cancellation |
 | `expireOrder(orderId)` | Time-based (`blockTimeGte(expiresAt)`) — callable by anyone once expired | Marks a past-expiry order `EXPIRED` |
 | `settle(buyOrderId, sellOrderId)` | Commitment verification + business-rule asserts, no caller-identity check (intentional — callable by the Matcher on behalf of two other parties) | Atomically fills a matching pair |

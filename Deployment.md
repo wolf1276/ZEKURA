@@ -13,21 +13,76 @@ deployed contract build.
 | Network | Contract Address | Deployer | Deployed | Verified |
 |---|---|---|---|---|
 | **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` | `mn_addr_preview133whwmeuxs6zs5r0n6ad2sse6q076mk8lggq3y7pl8h4vsywp7zqgwjzmf` | 2026-07-15 | ✅ 2026-07-16 (`npm run test:e2e`, re-confirmed in the Level 4 pass below) |
-| **Preprod** | `20f760d5e29cd868a2d7a25872e71cb042d8f68130e932a13e5111e5136d05c9` | `mn_addr_preprod1hwlanukqjw39mcm26wrnc5t2t62zgmy0p526zlx3pjsfmglegm2q3pgn0c` | 2026-07-17 | ✅ 2026-07-17 (`npm run test:e2e` — full Treasury lifecycle: deposit → reserve → release → withdraw, all real on-chain transactions; see "Post-Treasury staged redeploy" below) |
+| **Preprod (exchange)** | `831aa0d2c2b49286f0736bb6f60b0d8b90aa09e043930e5182a129428a456734` | `mn_addr_preprod1420rzrglra4qm3l26suvxx8z0wtkc6tf8wn77zggzjd4geajtg2q6ag3cz` | 2026-07-17 | ⚠️ Deployed and typecheck/lint/test-suite verified (see "NIGHT payment leg + SELL PPM + circuit trim" below); no live on-chain trade round trip run yet against this address — Matcher was not started against it this session |
+| **Preprod (tZKR token)** | `461009399dcd6e196376c3e8d470f8ba801a1d0d9262ead39a0684f500f85f89` | same deployer as above | 2026-07-17 | ✅ Deployed and minted (1,000,000 tZKR, tx `007317845f34574bcacdc849503909bc25f8c75f0794d1335cf68d258ab5be7f66`); **not yet wired as the tradable asset** in matcher/web config — see Known Limitations |
 | Undeployed (local devnet) | not persistent — redeploy via `npm run setup` | genesis seed | — | n/a |
 
-**Preview is stale as of this entry** — it still runs the pre-Treasury 5-circuit build (`7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984`, unchanged since 2026-07-15) and was out of scope for this pass (Preprod-only per the operator's brief). It has no Treasury/PPM circuits and will need the same staged-redeploy treatment described below before it can serve those features.
+**Preview is now significantly stale** — it still runs the pre-Treasury 5-circuit build from 2026-07-15, with none of the Treasury/PPM/NIGHT-payment-leg/tZKR work below. Out of scope for this pass (Preprod-only per the operator's brief).
 
-Both Preview and Preprod run the **same contract build** — the post-audit
-`cancelOrder` owner-identity fix documented in [AUDIT.md](./AUDIT.md) (commit
-`6fe3575`). `contracts/managed/exchange/` was recompiled immediately before
-the Preprod deployment below and its output is byte-identical to what Preview
-already runs (same source, same compiler version, `compact 0.5.1`).
+`web/.env.local` (created this pass — it did not previously exist in this
+checkout) points `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREPROD` at the new
+exchange address above; `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREVIEW` is
+left blank (unchanged — no Preview redeploy happened this pass).
 
-`web/.env.local`'s `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREPROD` now points
-at the Preprod address above; `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREVIEW`
-is unchanged from its existing value. No Preview infrastructure (wallet,
-deployment record, or env var) was touched by this deployment.
+---
+
+## Preprod redeploy — 2026-07-17/18: NIGHT payment leg + SELL PPM + tZKR + circuit trim
+
+This pass added a real NIGHT (`nativeToken()`) payment leg to both branches of
+`settleWithProtocol` (previously PPM fills moved the traded asset but never
+collected/paid the NIGHT side), implemented SELL-side PPM fills (previously
+BUY-only), and deployed a new project-owned fungible token, tZKR ("Zekura
+Test Token", OpenZeppelin-Compact `FungibleToken`), replacing the placeholder
+tDUST-based demo asset. See `contracts/exchange.compact`'s `settleWithProtocol`
+and `contracts/tzkr-token.compact`.
+
+**Architectural consequence, not a bug:** because `receiveUnshielded` always
+pulls funds from whoever *submits* the transaction, both BUY and SELL PPM
+fills now require the filled order's own wallet to submit `settleWithProtocol`
+— the Matcher can no longer auto-execute a protocol fill end-to-end the way it
+used to for BUY. `matcher/src/ppm/PPMService.ts` reserves liquidity and
+returns a pending quote; the submitting session's own wallet must finish the
+trade. **As of this entry, no frontend code path actually does this** — see
+Known Limitations.
+
+**Deploy-time blocker and fix:** the exchange contract's circuit count grew
+to 13 exported circuits with this pass's additions, which exceeded Preprod's
+per-block transaction weight limit (`1010: Invalid Transaction: Transaction
+would exhaust the block limits`) — confirmed non-transient by two consecutive
+identical failures, the second on an already-fully-synced wallet. Per an
+unused-circuit audit (grepped every call site across web/matcher/scripts;
+`tests/*.test.ts` circuit-simulator calls don't count as real on-chain
+callers), `getOrder` was the only exported circuit never invoked as a real
+transaction anywhere — the Matcher already reads order state for free via
+`queryContractState` + `Exchange.ledger(...)` (`matcher/src/index.ts`'s
+`onChainReader.getOrder`), exactly the same free-read pattern the contract's
+own comments document for `getTreasuryBalance`/`getTreasuryReserved`/
+`getReservation` (all dropped previously, for the identical reason). Removing
+`getOrder` brought the circuit count to 12 and the deploy succeeded
+immediately after. Tests that called the circuit directly
+(`tests/exchange.test.ts`, `tests/treasury.test.ts`) were updated to read the
+public `orders` ledger Map directly instead — same pattern already used for
+Treasury reads in `tests/treasury.test.ts`'s `readBalance`/`readReserved`/
+`readReservation` helpers. All 61 contract tests, matcher's 215 tests, and
+web's 19 tests pass after the change; typecheck/lint clean across all three
+packages.
+
+### Known limitations (not yet fixed)
+
+1. **No frontend path submits `settleWithProtocol`.** `web/` has zero
+   references to it or to `pendingProtocolQuote` — a PPM fill (BUY or SELL)
+   reserves on-chain liquidity via the Matcher and then stalls; nothing in
+   the shipped UI ever finishes the trade. User-user `settle()` fills
+   (Matcher's own operator wallet) are unaffected. See the conversation's
+   payment-leg audit for the full trace.
+2. **tZKR is deployed and minted but not wired as a tradable asset.** No
+   asset-registry mapping connects tZKR's real contract address to the
+   matcher's `toOnChainAssetKey`/web's `DEFAULT_PAIR` — the tNIGHT/tZKR pair
+   currently shown in the UI is mock/display data only.
+3. **The redeployed exchange contract has not had a live on-chain trade
+   verified against it this session** (no Matcher was started against the
+   new address) — only typecheck/lint/test-suite verification and the
+   deploy transaction itself are confirmed.
 
 ---
 
