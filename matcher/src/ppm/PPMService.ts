@@ -6,9 +6,11 @@ import { MarketDataService } from '../services/MarketDataService.js';
 import type { Order } from '../types/Order.js';
 import type { Hex32 } from '../types/Asset.js';
 import type { Logger } from '../utils/logger.js';
+import type { Side } from '../types/Side.js';
+import type { PpmReservation } from '../types/Treasury.js';
 import type { Broadcaster } from '../websocket/SocketServer.js';
 import type { PricingEngine } from './PricingEngine.js';
-import { userAddressRecipient, UNUSED_RECIPIENT, type TreasuryClient } from './TreasuryClient.js';
+import { NIGHT_ASSET_KEY, type TreasuryClient } from './TreasuryClient.js';
 
 export interface PPMServiceDeps {
   readonly marketDataService: MarketDataService;
@@ -24,23 +26,39 @@ export interface PPMServiceDeps {
   readonly now?: () => number;
 }
 
+/**
+ * A PPM quote that was reserved on-chain but NOT yet settled. Settlement is
+ * now the responsibility of the filled order's OWN wallet (both BUY and SELL
+ * — see contracts/exchange.compact's settleWithProtocol NIGHT payment leg):
+ * the Matcher's operator wallet can no longer submit settleWithProtocol,
+ * because receiveUnshielded always pulls funds (the buyer's NIGHT on a BUY,
+ * the seller's asset on a SELL) from whoever SUBMITS the transaction. So
+ * attemptFill quotes + reserves, then returns this pending outcome for the
+ * user's wallet to finalize; OrderService reconciles the result lazily off
+ * the chain afterward.
+ */
 export type PpmFillOutcome =
   | {
-      readonly filled: true;
+      readonly pending: true;
       readonly quoteId: Hex32;
+      readonly assetKey: Hex32;
+      readonly side: Side;
       readonly price: bigint;
       readonly amount: bigint;
-      readonly txId: string;
+      readonly expiresAt: bigint;
     }
-  | { readonly filled: false; readonly reason: string };
+  | { readonly pending: false; readonly reason: string };
 
 /**
  * Orchestrates one PPM-backed fill attempt for a resting order that found no
- * user counterparty: quote -> reserve -> settle, all real on-chain
- * transactions via TreasuryClient. Never invents a fill — any failure at any
- * step (no quote, insufficient liquidity, a failed reserve/settle
- * transaction) leaves the order untouched for the caller (OrderService) to
- * treat exactly like "no match found".
+ * user counterparty: quote -> reserve, both real on-chain reads/transactions
+ * via TreasuryClient. It stops at the reservation and hands back a pending
+ * quote — it NEVER submits settleWithProtocol itself (that now requires the
+ * user's own wallet as submitter; see PpmFillOutcome above). Any failure
+ * before the reservation (no quote, non-crossing price, insufficient
+ * asset/NIGHT liquidity, a failed reserve transaction) leaves the order
+ * untouched for the caller (OrderService) to treat exactly like "no match
+ * found".
  */
 export class PPMService {
   private readonly marketDataService: MarketDataService;
@@ -91,27 +109,6 @@ export class PPMService {
    * owns applying a MatchingEngine result.
    */
   async attemptFill(order: Pick<Order, 'id' | 'asset' | 'side' | 'price' | 'amount' | 'payoutAddress'>): Promise<PpmFillOutcome> {
-    // PPM fills only run in the direction where the Treasury is the seller
-    // (order.side === 'BUY' -> settleWithProtocol's isBuy branch -> the
-    // contract pays out of its own already-deposited balance via
-    // sendUnshielded to the buyer's payoutAddress). The mirror direction
-    // (a resting SELL filled by the Treasury buying the asset) requires
-    // settleWithProtocol's receiveUnshielded branch, which needs the
-    // *seller's own wallet* to supply that asset as a transaction input.
-    // Every Treasury/PPM on-chain call is submitted and balanced by the
-    // Matcher's single operator wallet (see src/index.ts), which never
-    // custodies user funds and has no mechanism to receive or forward a
-    // seller-supplied input — there is no escrow or co-signing step
-    // anywhere in order creation/submission (see matcher/API.md's POST
-    // /orders body). Attempting it would either fail outright (operator
-    // wallet holds none of the asset) or, worse, silently debit the
-    // operator wallet's own balance while marking the seller's order
-    // FILLED without ever taking the seller's asset. Until a user-signed
-    // escrow leg exists for that direction, PPM fills are BUY-only.
-    if (order.side === 'SELL') {
-      return { filled: false, reason: 'Protocol liquidity fills are only available for buy orders.' };
-    }
-
     const onChainAssetKey = this.toOnChainAssetKey(order.asset);
     const snapshot = await this.marketDataService.getSnapshot(order.asset, this.statsWindowMs);
     const referencePrice = MarketDataService.referencePrice(snapshot);
@@ -123,22 +120,28 @@ export class PPMService {
       nowSeconds,
     );
     if (!quote) {
-      return { filled: false, reason: 'Protocol liquidity unavailable.' };
+      return { pending: false, reason: 'Protocol liquidity unavailable.' };
     }
 
     const crosses = order.side === 'BUY' ? order.price >= quote.price : order.price <= quote.price;
     if (!crosses) {
-      return { filled: false, reason: "Order's limit price does not cross the protocol's quote" };
+      return { pending: false, reason: "Order's limit price does not cross the protocol's quote" };
     }
 
-    if (order.side === 'BUY' && !order.payoutAddress) {
-      return {
-        filled: false,
-        reason: 'Order has no payout address on file — cannot receive a protocol-liquidity fill (see Order.payoutAddress)',
-      };
+    // SELL fills: the protocol BUYS the asset and pays the seller in NIGHT
+    // (settleWithProtocol's sell branch: sendUnshielded(nativeToken(), ...)).
+    // Only quote it if the Treasury actually holds enough NIGHT to cover the
+    // payment — same "never invent liquidity" rule the asset-side check
+    // enforces, applied to the NIGHT leg. paymentAmount = amount * price.
+    if (order.side === 'SELL') {
+      const paymentAmount = quote.amount * quote.price;
+      const nightLiquidity = await this.treasuryClient.getLiquidity(NIGHT_ASSET_KEY);
+      if (nightLiquidity.available < paymentAmount) {
+        return { pending: false, reason: 'Insufficient protocol NIGHT liquidity to pay the seller.' };
+      }
     }
 
-    const quoteId = randomBytes(32).toString('hex');
+    const quoteId = randomBytes(32).toString('hex') as Hex32;
     const reserveResult = await this.treasuryClient.reserveLiquidity(
       quoteId,
       onChainAssetKey,
@@ -147,7 +150,7 @@ export class PPMService {
       quote.expiresAt,
     );
     if (reserveResult.outcome !== 'success') {
-      return { filled: false, reason: reserveResult.message };
+      return { pending: false, reason: reserveResult.message };
     }
 
     const createdAt = this.now();
@@ -171,30 +174,37 @@ export class PPMService {
       expiresAt: quote.expiresAt.toString(),
     });
 
-    const recipient = order.side === 'BUY' ? userAddressRecipient(order.payoutAddress as Hex32) : UNUSED_RECIPIENT;
-    const settleResult = await this.treasuryClient.settleWithProtocol(order.id, quoteId, recipient);
+    // Stop here: the liquidity is reserved but NOT settled. The user's own
+    // wallet must submit settleWithProtocol (it supplies the NIGHT on a BUY
+    // or the asset on a SELL). OrderService returns this quote to the
+    // submitting session and lazily reconciles the eventual on-chain fill.
+    return {
+      pending: true,
+      quoteId,
+      assetKey: onChainAssetKey,
+      side: order.side,
+      price: quote.price,
+      amount: quote.amount,
+      expiresAt: quote.expiresAt,
+    };
+  }
 
-    if (settleResult.outcome !== 'success') {
-      // Best-effort: give the liquidity back rather than leaving it
-      // needlessly reserved until releaseExpiredLiquidity eventually can.
-      const released = await this.treasuryClient.releaseLiquidity(quoteId);
-      if (released.outcome === 'success') {
-        this.reservationRepo.updateState(quoteId, 'RELEASED', ['OPEN']);
-        this.recordTreasuryEvent('RELEASE', onChainAssetKey, quote.amount, quoteId, released.txId);
-        this.broadcaster.broadcast('treasury.released', { quoteId, assetKey: onChainAssetKey, amount: quote.amount.toString() });
-      } else {
-        this.logger.warn(
-          { quoteId, settleResult, released },
-          'settleWithProtocol failed and the best-effort releaseLiquidity also failed — reservation stays OPEN until it expires and releaseExpiredLiquidity reclaims it',
-        );
-      }
-      return { filled: false, reason: settleResult.message };
-    }
-
-    this.reservationRepo.updateState(quoteId, 'EXECUTED', ['OPEN']);
-    this.recordTreasuryEvent('EXECUTE', onChainAssetKey, quote.amount, quoteId, settleResult.txId);
-
-    return { filled: true, quoteId, price: quote.price, amount: quote.amount, txId: settleResult.txId };
+  /**
+   * Marks a reservation EXECUTED locally and records the EXECUTE Treasury
+   * history row — called by OrderService's lazy reconciliation once it has
+   * confirmed (directly from the chain) that the user's own
+   * settleWithProtocol transaction actually landed. Idempotent: a
+   * double-reconciliation is a no-op (the CAS from OPEN only fires once).
+   * Returns the reservation if it existed, whether or not this call was the
+   * one that transitioned it.
+   */
+  markReservationExecuted(quoteId: Hex32, txId: string | null = null): PpmReservation | undefined {
+    const reservation = this.reservationRepo.findById(quoteId);
+    if (!reservation) return undefined;
+    const applied = this.reservationRepo.updateState(quoteId, 'EXECUTED', ['OPEN']);
+    if (!applied) return this.reservationRepo.findById(quoteId);
+    this.recordTreasuryEvent('EXECUTE', reservation.assetKey, reservation.amount, quoteId, txId);
+    return { ...reservation, state: 'EXECUTED' };
   }
 
   /**

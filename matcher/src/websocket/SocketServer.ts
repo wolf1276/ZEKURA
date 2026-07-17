@@ -12,6 +12,13 @@ export type MatcherEventType =
   | 'order.filled'
   | 'order.expired'
   | 'order.failed'
+  // A PPM quote was reserved on-chain and is waiting for the order owner's
+  // own wallet to submit settleWithProtocol (both BUY and SELL now require
+  // this — see ppm/PPMService.ts's PpmFillOutcome). Lets a session other
+  // than the submitting one (a second tab, the Orders page revisiting later)
+  // surface the "Approve Settlement" step. Payload:
+  // {orderId, quoteId, assetKey, side, amount, price, expiresAt}.
+  | 'order.ppm_quote_ready'
   // Treasury/PPM events — see ppm/PPMService.ts and api/treasury.ts.
   // order.filled's payload gains a `matchedWith: 'user' | 'protocol'` field
   // rather than a separate event type, since it's still the same

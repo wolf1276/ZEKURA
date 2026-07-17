@@ -40,6 +40,8 @@ import { PPMService } from './ppm/PPMService.js';
 import {
   TreasuryClient,
   type EitherAddressValue,
+  type OnChainReservationReader,
+  type OnChainReservationState,
   type OnChainTreasuryReader,
   type PpmCircuitCaller,
 } from './ppm/TreasuryClient.js';
@@ -255,6 +257,18 @@ async function main(): Promise<void> {
     },
   };
 
+  const reservationReader: OnChainReservationReader = {
+    async getReservationState(quoteId: Hex32): Promise<OnChainReservationState> {
+      const contractState = await providers.publicDataProvider.queryContractState(deployment.address);
+      if (!contractState) return 'NOT_FOUND';
+      const ledgerState = Exchange.ledger(contractState.data);
+      const idBytes = hexToBytes32(quoteId);
+      if (!ledgerState.reservations.member(idBytes)) return 'NOT_FOUND';
+      const record = ledgerState.reservations.lookup(idBytes);
+      return Exchange.ReservationState[record.state] as OnChainReservationState;
+    },
+  };
+
   const ppmCaller: PpmCircuitCaller = {
     async reserveLiquidity(quoteId, assetKey, amount, price, expiresAt) {
       const tx = await foundContract.callTx.reserveLiquidity(quoteId, assetKey, amount, price, expiresAt);
@@ -341,6 +355,8 @@ async function main(): Promise<void> {
     logger,
     onMatch: (match) => settlementService?.handleMatch(match),
     ppmService,
+    reservationRepo,
+    reservationReader,
   });
   orderServiceRef = orderService;
 
@@ -383,6 +399,15 @@ async function main(): Promise<void> {
   const EXPIRY_SWEEP_INTERVAL_MS = 60_000;
   const expirySweepInterval = setInterval(() => {
     ppmService.sweepExpiredReservations().catch((error) => logger.error({ error }, 'PPM expiry sweep failed'));
+    // Closed-tab safety net: reconcile any pending protocol fill whose
+    // user-submitted settleWithProtocol has landed on-chain but whose owning
+    // session never re-fetched GET /orders/:id to trigger the lazy path.
+    orderService
+      .reconcileAllPendingProtocolFills()
+      .then((n) => {
+        if (n > 0) logger.info({ materialized: n }, 'reconciled executed PPM reservations from the periodic sweep');
+      })
+      .catch((error) => logger.error({ error }, 'PPM reconcile sweep failed'));
   }, EXPIRY_SWEEP_INTERVAL_MS);
   expirySweepInterval.unref();
 

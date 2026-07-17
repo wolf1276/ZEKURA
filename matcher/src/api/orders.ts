@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
-import type { OrderService, ProtocolFill } from '../services/OrderService.js';
+import type { OrderService, PendingProtocolQuote, ProtocolFill } from '../services/OrderService.js';
 import type { Match } from '../matcher/Match.js';
 import type { Order } from '../types/Order.js';
 import { createOrderSchema, orderIdParamSchema } from '../utils/validation.js';
@@ -42,6 +42,15 @@ function protocolFillToJSON(fill: ProtocolFill) {
   };
 }
 
+function pendingProtocolQuoteToJSON(quote: PendingProtocolQuote) {
+  return {
+    quoteId: quote.quoteId,
+    price: quote.price.toString(),
+    amount: quote.amount.toString(),
+    expiresAt: quote.expiresAt.toString(),
+  };
+}
+
 const SUBMIT_ERROR_STATUS: Record<string, number> = {
   DUPLICATE: 409,
   SIGNATURE_INVALID: 422,
@@ -72,6 +81,7 @@ export function registerOrderRoutes(app: FastifyInstance, orderService: OrderSer
       order: orderToJSON(result.order),
       match: result.match ? matchToJSON(result.match) : null,
       protocolFill: result.protocolFill ? protocolFillToJSON(result.protocolFill) : null,
+      pendingProtocolQuote: result.pendingProtocolQuote ? pendingProtocolQuoteToJSON(result.pendingProtocolQuote) : null,
     });
   });
 
@@ -88,9 +98,13 @@ export function registerOrderRoutes(app: FastifyInstance, orderService: OrderSer
     return reply.code(200).send({ order: orderToJSON(result.order) });
   });
 
-  app.get('/orders/open', async () => ({
-    orders: orderService.listOpen().map(orderToJSON),
-  }));
+  app.get('/orders/open', async () => {
+    // Reconcile any pending protocol fills whose settleWithProtocol has landed
+    // on-chain before listing — keeps the open list from showing an order the
+    // chain already considers FILLED.
+    await orderService.reconcileAllPendingProtocolFills();
+    return { orders: orderService.listOpen().map(orderToJSON) };
+  });
 
   app.get('/orders/:id', async (request, reply: FastifyReply) => {
     const parsed = orderIdParamSchema.safeParse(request.params);
@@ -98,7 +112,10 @@ export function registerOrderRoutes(app: FastifyInstance, orderService: OrderSer
       return reply.code(400).send({ error: 'validation_failed', issues: parsed.error.issues });
     }
 
-    const order = orderService.getOrder(parsed.data.id);
+    // Reconciled read: if the owner's wallet just submitted settleWithProtocol,
+    // this fetch is what materializes the fill locally (see the web settlement
+    // hook, which re-fetches GET /orders/:id right after the wallet resolves).
+    const order = await orderService.getOrderReconciled(parsed.data.id);
     if (!order) {
       return reply.code(404).send({ error: 'NOT_FOUND', message: `No such order: ${parsed.data.id}` });
     }

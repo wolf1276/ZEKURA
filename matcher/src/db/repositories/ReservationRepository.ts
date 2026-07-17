@@ -67,6 +67,14 @@ export class ReservationRepository {
     return rows.map(rowToReservation);
   }
 
+  /** The still-OPEN reservation for a given order, if any — backs OrderService's lazy reconciliation of a pending protocol fill. Newest first, since re-quoting could in principle produce more than one over an order's life (only the current OPEN one matters). */
+  findOpenByOrderId(orderId: string): PpmReservation | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM ppm_reservations WHERE order_id = ? AND state = 'OPEN' ORDER BY created_at DESC LIMIT 1")
+      .get(orderId) as ReservationRow | undefined;
+    return row ? rowToReservation(row) : undefined;
+  }
+
   listByState(state: ReservationState): PpmReservation[] {
     const rows = this.db
       .prepare('SELECT * FROM ppm_reservations WHERE state = ? ORDER BY created_at ASC')

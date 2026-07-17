@@ -34,6 +34,31 @@ export interface OnChainTreasuryReader {
   getLiquidity(assetKey: Hex32): Promise<TreasuryLiquidity>;
 }
 
+/**
+ * The NIGHT (native token) asset key — nativeToken() is the all-zeros token
+ * type (see contracts/exchange.compact's settleWithProtocol NIGHT payment
+ * leg). The Treasury tracks its NIGHT liquidity in the same treasuryBalances
+ * map under this key, read exactly like any other asset via getLiquidity.
+ * A traded asset's deriveAssetKey() hash can never be all zeros, so there is
+ * no collision with a real asset.
+ */
+export const NIGHT_ASSET_KEY: Hex32 = '00'.repeat(32) as Hex32;
+
+/** On-chain lifecycle state of a PPM reservation, read for free from the public reservations ledger Map. */
+export type OnChainReservationState = 'OPEN' | 'RELEASED' | 'EXECUTED' | 'NOT_FOUND';
+
+/**
+ * Free (non-transactional) read of one reservation's on-chain state via the
+ * public indexer — mirrors OnChainTreasuryReader/OnChainOrderReader, reading
+ * the reservations ledger Map directly (src/index.ts implements it). Used by
+ * OrderService's lazy reconciliation: once settleWithProtocol lands, the
+ * reservation flips to EXECUTED on-chain, which is the authoritative signal
+ * that a pending protocol fill actually executed.
+ */
+export interface OnChainReservationReader {
+  getReservationState(quoteId: Hex32): Promise<OnChainReservationState>;
+}
+
 /** Either<ContractAddress, UserAddress> struct value, matching sendUnshielded's recipient parameter shape. */
 export interface EitherAddressValue {
   readonly is_left: boolean;

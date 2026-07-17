@@ -1,10 +1,12 @@
 import type { MatchRepository } from '../db/repositories/MatchRepository.js';
 import type { OrderRepository } from '../db/repositories/OrderRepository.js';
+import type { ReservationRepository } from '../db/repositories/ReservationRepository.js';
 import type { Match } from '../matcher/Match.js';
 import type { MatchingEngine } from '../matcher/MatchingEngine.js';
 import type { OrderBook } from '../orderbook/OrderBook.js';
 import { buildOrderBookSnapshot, type OrderBookSnapshot } from '../orderbook/snapshot.js';
 import type { PPMService } from '../ppm/PPMService.js';
+import type { OnChainReservationReader } from '../ppm/TreasuryClient.js';
 import type { OnChainOrderReader } from '../settlement/SettlementClient.js';
 import { assetKey, type Asset, type Hex32 } from '../types/Asset.js';
 import type { MarketStats } from '../types/MarketStats.js';
@@ -27,7 +29,14 @@ export type SubmitOrderErrorCode =
   | 'COMMITMENT_MISMATCH'
   | 'EXPIRED';
 
-/** A fill against protocol liquidity instead of a second user order — see ppm/PPMService.ts's PpmFillOutcome, which this mirrors once `filled` is true. */
+/**
+ * A fill against protocol liquidity instead of a second user order. Retained
+ * in the result shape for backward compatibility, but always null now: the
+ * Matcher no longer auto-executes a protocol fill (settleWithProtocol must be
+ * submitted by the user's own wallet — see PendingProtocolQuote and
+ * contracts/exchange.compact's NIGHT payment leg). A completed protocol fill
+ * surfaces via the order.filled WS broadcast reconciliation emits, not here.
+ */
 export interface ProtocolFill {
   readonly quoteId: Hex32;
   readonly price: bigint;
@@ -35,8 +44,28 @@ export interface ProtocolFill {
   readonly txId: string;
 }
 
+/**
+ * A protocol-liquidity quote that has been reserved on-chain but still needs
+ * the user's own wallet to submit settleWithProtocol. Included directly in
+ * the POST /orders response so the submitting session can offer an "Approve
+ * Settlement" step without waiting for a WS round-trip; other sessions learn
+ * of it via the order.ppm_quote_ready broadcast instead.
+ */
+export interface PendingProtocolQuote {
+  readonly quoteId: Hex32;
+  readonly price: bigint;
+  readonly amount: bigint;
+  readonly expiresAt: bigint;
+}
+
 export type SubmitOrderResult =
-  | { readonly ok: true; readonly order: Order; readonly match: Match | null; readonly protocolFill: ProtocolFill | null }
+  | {
+      readonly ok: true;
+      readonly order: Order;
+      readonly match: Match | null;
+      readonly protocolFill: ProtocolFill | null;
+      readonly pendingProtocolQuote: PendingProtocolQuote | null;
+    }
   | { readonly ok: false; readonly code: SubmitOrderErrorCode; readonly message: string };
 
 export type CancelOrderErrorCode = 'NOT_FOUND' | 'NOT_CANCELLABLE';
@@ -58,6 +87,10 @@ export interface OrderServiceDeps {
   readonly onMatch: (match: Match) => void;
   /** Optional: when absent, an order that finds no user counterparty simply rests OPEN, same as before the Treasury/PPM existed. */
   readonly ppmService?: PPMService;
+  /** Optional: local mirror of PPM reservations — needed for lazy reconciliation of a pending protocol fill. Present whenever ppmService is. */
+  readonly reservationRepo?: ReservationRepository;
+  /** Optional: free on-chain read of a reservation's state — the authoritative signal that a user-submitted settleWithProtocol landed. */
+  readonly reservationReader?: OnChainReservationReader;
   readonly now?: () => number;
 }
 
@@ -87,6 +120,8 @@ export class OrderService {
   private readonly logger: Logger;
   private readonly onMatch: (match: Match) => void;
   private readonly ppmService: PPMService | undefined;
+  private readonly reservationRepo: ReservationRepository | undefined;
+  private readonly reservationReader: OnChainReservationReader | undefined;
   private readonly now: () => number;
 
   constructor(deps: OrderServiceDeps) {
@@ -100,6 +135,8 @@ export class OrderService {
     this.logger = deps.logger;
     this.onMatch = deps.onMatch;
     this.ppmService = deps.ppmService;
+    this.reservationRepo = deps.reservationRepo;
+    this.reservationReader = deps.reservationReader;
     this.now = deps.now ?? (() => Date.now());
   }
 
@@ -192,38 +229,37 @@ export class OrderService {
       // simply rests OPEN. See ppm/PPMService.ts's own doc comment.
       if (this.ppmService) {
         const ppmResult = await this.ppmService.attemptFill(order);
-        if (ppmResult.filled) {
-          const applied = this.orderRepo.updateStatus(order.id, 'FILLED', ['OPEN']);
-          if (applied) {
-            this.orderBook.remove(order.id);
-            const filled: Order = { ...order, status: 'FILLED' };
-            this.broadcaster.broadcast('order.filled', {
-              order: filled,
-              matchedWith: 'protocol',
+        if (ppmResult.pending) {
+          // The PPM reserved liquidity but did NOT settle — the order stays
+          // OPEN locally until the user's own wallet submits
+          // settleWithProtocol and reconciliation confirms it on-chain.
+          // Broadcast so other sessions (a second tab, the Orders page) can
+          // surface the "Approve Settlement" step; the submitting session
+          // gets it synchronously in this same HTTP response too.
+          this.broadcaster.broadcast('order.ppm_quote_ready', {
+            orderId: order.id,
+            quoteId: ppmResult.quoteId,
+            assetKey: ppmResult.assetKey,
+            side: ppmResult.side,
+            amount: ppmResult.amount.toString(),
+            price: ppmResult.price.toString(),
+            expiresAt: ppmResult.expiresAt.toString(),
+          });
+          return {
+            ok: true,
+            order,
+            match: null,
+            protocolFill: null,
+            pendingProtocolQuote: {
               quoteId: ppmResult.quoteId,
-              price: ppmResult.price.toString(),
-              amount: ppmResult.amount.toString(),
-              txId: ppmResult.txId,
-            });
-            return {
-              ok: true,
-              order: filled,
-              match: null,
-              protocolFill: { quoteId: ppmResult.quoteId, price: ppmResult.price, amount: ppmResult.amount, txId: ppmResult.txId },
-            };
-          }
-          // The on-chain settleWithProtocol already succeeded even though
-          // this local CAS lost a race (structurally shouldn't happen — see
-          // the equivalent user-match fallback below) — log loudly rather
-          // than silently reporting the order as merely resting when it is
-          // in fact already FILLED on-chain.
-          this.logger.error(
-            { orderId: order.id, ppmResult },
-            'settleWithProtocol succeeded on-chain but the local OPEN -> FILLED CAS lost a race',
-          );
+              price: ppmResult.price,
+              amount: ppmResult.amount,
+              expiresAt: ppmResult.expiresAt,
+            },
+          };
         }
       }
-      return { ok: true, order, match: null, protocolFill: null };
+      return { ok: true, order, match: null, protocolFill: null, pendingProtocolQuote: null };
     }
 
     const claimed = this.db.transaction(() => {
@@ -240,7 +276,7 @@ export class OrderService {
       // but if it ever does, the order stays OPEN and simply waits for the
       // next arrival/removal to be reconsidered rather than being lost.
       this.logger.error({ match }, 'failed to atomically claim a match — one or both orders were no longer OPEN');
-      return { ok: true, order, match: null, protocolFill: null };
+      return { ok: true, order, match: null, protocolFill: null, pendingProtocolQuote: null };
     }
 
     this.orderBook.remove(match.buyOrderId);
@@ -248,7 +284,76 @@ export class OrderService {
     this.broadcaster.broadcast('order.matched', match);
     this.onMatch(match);
 
-    return { ok: true, order, match, protocolFill: null };
+    return { ok: true, order, match, protocolFill: null, pendingProtocolQuote: null };
+  }
+
+  /**
+   * Lazy reconciliation of a pending protocol fill — the on-chain state is
+   * always the source of truth, so there is no "trust the client's claim"
+   * surface here. If an OPEN order has an OPEN PPM reservation and the chain
+   * shows either the order FILLED or the reservation EXECUTED (both are set
+   * atomically by settleWithProtocol), materialize the fill locally
+   * (CAS OPEN -> FILLED) and emit the SAME order.filled broadcast the old
+   * auto-fill path used, so downstream consumers need no changes. Idempotent:
+   * a double call, or a call after the CAS already fired, is a no-op.
+   */
+  private async reconcileProtocolFill(order: Order): Promise<Order> {
+    if (order.status !== 'OPEN' || !this.reservationRepo) return order;
+    const reservation = this.reservationRepo.findOpenByOrderId(order.id);
+    if (!reservation) return order;
+
+    const onChainOrder = await this.onChainReader.getOrder(order.id);
+    let settled = onChainOrder.state === 'FILLED';
+    if (!settled && this.reservationReader) {
+      const reservationState = await this.reservationReader.getReservationState(reservation.quoteId);
+      settled = reservationState === 'EXECUTED';
+    }
+    if (!settled) return order;
+
+    const applied = this.orderRepo.updateStatus(order.id, 'FILLED', ['OPEN']);
+    if (!applied) {
+      // Lost a race to another reconciler/cancel — re-read authoritative row.
+      return this.orderRepo.findById(order.id) ?? order;
+    }
+    this.orderBook.remove(order.id);
+    this.ppmService?.markReservationExecuted(reservation.quoteId);
+    const filled: Order = { ...order, status: 'FILLED' };
+    this.broadcaster.broadcast('order.filled', {
+      order: filled,
+      matchedWith: 'protocol',
+      quoteId: reservation.quoteId,
+      price: reservation.price.toString(),
+      amount: reservation.amount.toString(),
+      txId: null,
+    });
+    return filled;
+  }
+
+  /**
+   * Sweeps every locally-OPEN reservation and reconciles any whose fill has
+   * landed on-chain — the closed-tab safety net, called on the same periodic
+   * loop as sweepExpiredReservations (see src/index.ts). Returns how many
+   * orders it materialized to FILLED.
+   */
+  async reconcileAllPendingProtocolFills(): Promise<number> {
+    if (!this.reservationRepo) return 0;
+    let materialized = 0;
+    for (const reservation of this.reservationRepo.listByState('OPEN')) {
+      if (!reservation.orderId) continue;
+      const order = this.orderRepo.findById(reservation.orderId);
+      if (!order || order.status !== 'OPEN') continue;
+      const result = await this.reconcileProtocolFill(order);
+      if (result.status === 'FILLED') materialized++;
+    }
+    return materialized;
+  }
+
+  /** getOrder, but first reconciling any pending protocol fill against the chain — the read path behind GET /orders/:id, which the web settlement hook re-fetches after the wallet submits settleWithProtocol. */
+  async getOrderReconciled(id: string): Promise<Order | undefined> {
+    const found = this.orderRepo.findById(id);
+    if (!found) return undefined;
+    const order = this.materializeExpiry(found);
+    return this.reconcileProtocolFill(order);
   }
 
   /**
