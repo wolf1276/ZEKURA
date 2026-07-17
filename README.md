@@ -71,11 +71,12 @@ order's actual live ledger record and shows it side by side with the order's
 real private fields, so the public/private split is something you can click
 and confirm.
 
-Zekura is a full production candidate, not a demo: **238 automated tests**
+Zekura is a full production candidate, not a demo: **284 automated tests**
 across all three tiers, an independent security audit with one P0 finding
 found and fixed (see [`AUDIT.md`](./AUDIT.md)), and live deployments
-exercised end to end — including real settlement and rejected attacks — on
-two public Midnight networks (see [`Deployment.md`](./Deployment.md)).
+exercised end to end — including real settlement, real Treasury-backed
+protocol fills, and rejected attacks — on two public Midnight networks (see
+[`Deployment.md`](./Deployment.md)).
 
 ### Product mapping
 
@@ -106,7 +107,8 @@ continuously operating order book."**
 | **Commitment-Based Order Model** | Orders are created with `persistentCommit<OrderDetails>(details, blinding)`; every later action (cancel, expire, settle) must supply witnesses that recompute the identical commitment before the contract trusts them. |
 | **Zero-Knowledge Settlement** | `settle()` takes no order data as arguments — it re-derives both orders' private details from witnesses and proves, in zero knowledge, that they satisfy the crossing rules, without disclosing the underlying values. |
 | **Proactive Matching Engine** | The Matcher's price-time-priority engine runs only on order arrival or removal — no poller, no timer, no background scan — and matches in O(1)-bounded operations against a per-asset, per-side price ladder. |
-| **Non-Custodial** | Zekura never holds funds or private keys. Wallets sign and submit their own `createOrder`/`cancelOrder` transactions directly; the Matcher only ever submits `settle()` for pairs it has independently verified against the chain. |
+| **Protocol-Owned Liquidity (PPM)** | When no user counterparty crosses, the Matcher falls back to the Proactive Market Maker, which fills the order out of the Treasury's real, deposited on-chain balance — never minted, never fabricated. See ["Proactive Market Maker (PPM)"](#proactive-market-maker-ppm). |
+| **Non-Custodial** | Zekura never holds funds or private keys. Wallets sign and submit their own `createOrder`/`cancelOrder` transactions directly; the Matcher only ever submits `settle()`/`settleWithProtocol()` for orders it has independently verified against the chain. |
 | **Wallet Agnostic** | Connects through the standard Midnight DApp Connector API. Any wallet extension that implements it is auto-discovered; 1AM and Lace are recognized by name today. |
 | **Replay Protection** | Two independent layers: a one-way `OPEN → {FILLED, CANCELLED, EXPIRED}` state machine, and a `settledPairs` nullifier set — a matched pair can never settle twice. |
 | **Midnight Native** | Written in [Compact](https://docs.midnight.network/compact), Midnight's zero-knowledge smart contract language, and integrated through the official `midnight-js-*` provider stack — no custom cryptography, no bridge, no side-chain. |
@@ -165,6 +167,8 @@ connected-wallet session yourself.
 - [Screenshots](#screenshots)
 - [Architecture Overview](#architecture-overview)
 - [How It Works](#how-it-works)
+- [Proactive Market Maker (PPM)](#proactive-market-maker-ppm)
+- [Treasury](#treasury)
 - [Privacy Model](#privacy-model)
 - [Technology Stack](#technology-stack)
 - [Repository Structure](#repository-structure)
@@ -185,16 +189,19 @@ connected-wallet session yourself.
 
 ## Architecture Overview
 
-Zekura has four moving parts: the **frontend** (wallet-facing UI), the
+Zekura has five moving parts: the **frontend** (wallet-facing UI), the
 **wallet layer** (the user's own extension plus a local proof server), the
-**Matcher** (confidential order book and settlement submitter), and the
-**exchange contract** (public commitment registry). A **Network Manager**
-inside the frontend keeps all of them pointed at the same Midnight network.
+**Matcher** (confidential order book, matching engine, and settlement
+submitter — which also embeds the **PPM**, the Matcher's fallback liquidity
+component), the **Treasury** (the contract's own protocol-owned liquidity
+ledger), and the **exchange contract** (public commitment registry +
+settlement + Treasury accounting). A **Network Manager** inside the frontend
+keeps all of them pointed at the same Midnight network.
 
 ```mermaid
 flowchart TB
     subgraph Browser["Browser — web/ (Next.js)"]
-        UI["Trade · Orders · Activity · Dashboard"]
+        UI["Trade · Orders · Activity · Dashboard · Treasury"]
         NM["Network Manager<br/>(networkConfig.ts / NetworkProvider)"]
     end
 
@@ -205,24 +212,27 @@ flowchart TB
 
     subgraph OffChain["Off-chain — matcher/"]
         Matcher["Matcher Server<br/>order book · matching engine · settlement queue"]
-        DB[("SQLite<br/>orders / matches / settlements")]
+        PPM["PPM<br/>(ppm/PPMService + PricingEngine)<br/>fallback liquidity, BUY-side only"]
+        DB[("SQLite<br/>orders / matches / settlements / reservations / treasury events")]
     end
 
     subgraph OnChain["Midnight Network"]
-        Contract["exchange.compact<br/>commitment registry + settlement"]
+        Contract["exchange.compact<br/>commitment registry · settlement · Treasury ledger"]
         Indexer["Indexer<br/>(public ledger reads)"]
         Node["Node"]
     end
 
     UI <-->|"connect / sign / submit"| Ext
     UI <-->|"REST + WebSocket"| Matcher
-    UI -.->|"read live ledger record<br/>(privacy-proof panel)"| Indexer
+    UI -.->|"read live ledger record<br/>(privacy-proof panel, Treasury page)"| Indexer
     NM -.-> UI
     NM -.-> Matcher
 
     Ext -->|"createOrder / cancelOrder"| Contract
     Ext -.->|"proof request<br/>(if no in-browser prover)"| PS
     Matcher -->|"settle()"| Contract
+    Matcher -->|"no user match found"| PPM
+    PPM -->|"reserveLiquidity / settleWithProtocol /<br/>releaseLiquidity"| Contract
     Matcher -.->|"proof request"| PS
     Matcher --- DB
 
@@ -235,7 +245,9 @@ anything — it delegates signing and proving to the connected wallet
 extension, and reads/writes order state through the Matcher's REST/WebSocket
 API. See [`web/src/services/midnight/exchangeContract.ts`](./web/src/services/midnight/exchangeContract.ts)
 for the direct contract calls and [`web/src/services/matcher/matcherClient.ts`](./web/src/services/matcher/matcherClient.ts)
-for the Matcher client.
+for the Matcher client. The `/treasury` route (`web/src/components/treasury/treasury-page.tsx`)
+reads live Treasury balance/reservation/risk data and, for allowlisted admin
+wallets, exposes the deposit/withdraw funding UI.
 
 **Wallet Layer.** Any Midnight DApp-Connector-compatible extension. 1AM
 implements in-browser proving; Lace does not, so the app falls back to a
@@ -245,13 +257,23 @@ local proof server for Lace sessions only. See ["Wallet Setup"](#wallet-setup).
 confidential order book. It receives full order details off-chain (after the
 wallet has already registered the order's commitment on-chain itself),
 independently re-verifies that disclosure against the live indexer, matches
-crossing orders in memory, and submits `settle()`. See
+crossing orders in memory, and submits `settle()`. When no user counterparty
+crosses, it hands the resting order to its embedded **PPM** component
+(`matcher/src/ppm/`) as a fallback liquidity provider — see
+["Proactive Market Maker (PPM)"](#proactive-market-maker-ppm). See
 [`matcher/ARCHITECTURE.md`](./matcher/ARCHITECTURE.md) for the full request
 flow and database schema.
 
+**Treasury.** The contract's own protocol-owned liquidity ledger
+(`treasuryBalances`/`treasuryReserved`/`reservations`/`treasuryHistory` in
+`contracts/exchange.compact`) — funded only by real admin deposits, never
+minted. See ["Treasury"](#treasury).
+
 **Exchange Contract (`contracts/exchange.compact`).** The sole source of
-truth on-chain. Five exported circuits, no admin role, no privileged caller —
-see ["Smart Contracts"](#smart-contracts).
+truth on-chain. 13 exported circuits plus 3 exported pure circuits, admin
+role gated to Treasury funding only (order creation/cancellation/settlement
+remain permissionless/owner-authorized, unchanged) — see
+["Smart Contracts"](#smart-contracts).
 
 **Network Manager.** `web/src/network/networkConfig.ts` is the single source
 of truth for every network Zekura supports (`preview`, `preprod` today).
@@ -265,8 +287,46 @@ below.
 
 ## How It Works
 
+### Matching & fallback flow
+
+The Matcher always tries a user counterparty first; the PPM is invoked only
+when the private order book has no crossing order, and acts as a fallback
+liquidity provider rather than the primary execution engine:
+
+```mermaid
+flowchart TD
+    A["User submits order"] --> B["Matcher validates order"]
+    B --> C["Search private order book"]
+    C --> D{"Match found?"}
+    D -->|Yes| E["User ↔ User settlement<br/>(settle())"]
+    D -->|No| F["Invoke PPM"]
+    F --> G["Treasury liquidity check<br/>(PricingEngine.quote)"]
+    G --> H{"Liquidity available?"}
+    H -->|Yes| I["Reserve funds<br/>(reserveLiquidity)"]
+    H -->|No| J["Order remains open"]
+    I --> K["Execute trade<br/>(settleWithProtocol)"]
+    K --> L["Settlement"]
+    L --> M["Release / finalize reservation"]
+    M --> N["Update Orders"]
+    N --> O["Update Activity"]
+    O --> P["Update Treasury"]
+    P --> Q["Update Dashboard"]
+    E --> N
+```
+
+If `settleWithProtocol` itself fails after a reservation was taken, the
+Matcher best-effort releases that reservation back to available liquidity
+immediately (`PPMService.attemptFill`'s catch path) rather than leaving it
+stuck until expiry; a still-open reservation past its `expiresAt` is
+reclaimed by `releaseExpiredLiquidity`, which is permissionless and swept
+periodically by the Matcher (`PPMService.sweepExpiredReservations`) as
+defense in depth. See ["Proactive Market Maker (PPM)"](#proactive-market-maker-ppm)
+for what "liquidity available" actually checks.
+
+### Order lifecycle, user↔user case
+
 The full lifecycle — **wallet → commitment → Matcher → settlement → ledger →
-UI updates** — for one order that gets matched:
+UI updates** — for one order that gets matched against another user:
 
 ```mermaid
 sequenceDiagram
@@ -309,6 +369,114 @@ Two properties make this safe without a trusted intermediary:
    `cancelOrder`, and the Matcher never holds one. See
    ["Privacy Model"](#privacy-model) for why this specific boundary needed a
    dedicated audit fix.
+
+## Proactive Market Maker (PPM)
+
+The PPM is **protocol-owned liquidity**, not a second matching engine and not
+a market-making bot with its own capital. It is the Matcher's fallback path
+(`matcher/src/ppm/PPMService.ts`) for the one case user↔user matching can't
+solve: a resting order with no crossing counterparty yet.
+
+- **Liquidity comes entirely from the Treasury.** Every unit the PPM ever
+  quotes or settles is a real balance already sitting in the contract's
+  `treasuryBalances` map — see ["Treasury"](#treasury).
+- **The PPM never mints assets and never creates fake liquidity.** `PricingEngine.quote`
+  (`matcher/src/ppm/PricingEngine.ts`) returns `null` — no quote at all —
+  whenever the requested amount exceeds the Treasury's currently *available*
+  balance (`balance − reserved`) or its configured per-quote risk limit
+  (`maxExposureFraction`, 20% of available liquidity by default). There is no
+  code path that fabricates a fill the Treasury can't actually back.
+- **The PPM only uses real deposited funds.** The only way `treasuryBalances`
+  becomes non-zero is an admin's `depositTreasury()` call actually pulling
+  tokens into the contract via `receiveUnshielded` — see ["Treasury"](#treasury).
+- **The Matcher decides whether a user match exists before invoking the
+  PPM.** `OrderService.submitOrder` runs `MatchingEngine.onOrderArrived`
+  first; the PPM is only called in the `no match` branch, exactly matching
+  the flow in ["How It Works"](#how-it-works).
+- **The PPM only executes when there is no suitable counterparty** — and even
+  then, only when the order's own limit price actually crosses the PPM's
+  quoted price (the same `buyPrice >= sellPrice`-style crossing check
+  `settle()` uses between two user orders, applied against the PPM's single
+  quote instead of a second order).
+- **Treasury liquidity is reserved before execution and released or settled
+  afterward.** A fill is always `reserveLiquidity()` → `settleWithProtocol()`,
+  never a direct debit — see the reserve/execute/release lifecycle in
+  ["Treasury"](#treasury) and the flowchart above.
+- **Settlement always occurs on-chain.** `settleWithProtocol` is a real
+  `exchange.compact` circuit; there is no off-chain-only "protocol fill" —
+  every PPM execution has a real transaction id, exactly like `settle()`.
+
+### MVP limitation: BUY-side only
+
+| | User ↔ User matching | PPM (protocol liquidity) |
+|---|---|---|
+| BUY | ✅ | ✅ |
+| SELL | ✅ | ❌ (disabled) |
+
+`settleWithProtocol`'s SELL-side branch requires the Treasury to *receive*
+the traded asset from the seller (`receiveUnshielded`) as part of the same
+transaction — but every Treasury/PPM on-chain call is submitted by the
+Matcher's own single operator wallet, which never custodies user funds and
+has no escrow or co-signing mechanism for a user to supply that asset as a
+transaction input. Attempting it would either fail outright or, worse,
+silently debit the operator wallet's own balance while marking the user's
+sell order `FILLED` without ever taking their asset.
+
+`PPMService.attemptFill` declines every SELL order up front
+(`"Protocol liquidity fills are only available for buy orders."`) and lets it
+rest OPEN for a user counterparty exactly as if no PPM existed. **This is an
+explicit MVP design decision, not a bug** — closing it requires a secure
+multi-asset custody/escrow leg for the Treasury to receive a user's asset,
+which is intentionally out of scope until that's built (see
+["Roadmap"](#roadmap)).
+
+## Treasury
+
+The Treasury is the contract's own protocol-owned liquidity pool — the
+on-chain state the PPM draws on. It has no relationship to any user's funds;
+Zekura remains non-custodial for trading (see ["Privacy Model"](#privacy-model)).
+
+- **The Treasury begins empty.** `treasuryBalances`/`treasuryReserved` are
+  ledger `Map`s with no seeded entries — a never-funded asset simply reads as
+  `0` (`balanceOf`/`reservedOf`'s member-check helpers), not an error.
+- **The Treasury is funded only through real deposits.** `depositTreasury(assetKey, amount)`
+  is the *only* circuit that increases `treasuryBalances` — it pulls real
+  tokens into the contract's own custody via `receiveUnshielded` and is
+  gated to an allowlisted admin (`requireAdmin()`, checking
+  `deriveAdminId(adminSecretKey())` against the on-chain `admins` set).
+- **Treasury backs protocol liquidity.** Everything the PPM ever quotes comes
+  out of this same balance — see ["Proactive Market Maker (PPM)"](#proactive-market-maker-ppm).
+- **Deposits increase available liquidity; reservations temporarily reduce
+  it.** "Available" is always `balance − reserved`, computed live by
+  `PricingEngine`/`OnChainTreasuryReader`, never a separately-tracked number
+  that could drift.
+- **Settlement finalizes accounting.** `settleWithProtocol` moves the
+  reserved amount out of `treasuryReserved` (BUY side: pays the buyer via
+  `sendUnshielded`) and marks the reservation `EXECUTED` — the same
+  reserve → finalize shape `reserveLiquidity`/`releaseLiquidity` already
+  establish.
+- **Withdrawals return unused Treasury funds.** `withdrawTreasury` is
+  admin-gated and explicitly can't touch anything currently reserved
+  (`amount + reserved <= balance`) — liquidity held against an open PPM quote
+  can never be pulled out from under it.
+- **Treasury health metrics reflect protocol liquidity in real time.** The
+  Matcher's `GET /ppm/status` and the web `/treasury` page compute a coarse
+  `empty`/`healthy`/`elevated`/`critical` risk label directly from live
+  `balance`/`reserved` (via `PricingEngine`'s inventory-skew utilization,
+  mirrored in `matcher/src/api/treasury.ts`'s `riskStatus`) — never a cached
+  or stale snapshot.
+
+### Reservation lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> OPEN: reserveLiquidity
+    OPEN --> EXECUTED: settleWithProtocol
+    OPEN --> RELEASED: releaseLiquidity (settlement failed / order cancelled)
+    OPEN --> RELEASED: releaseExpiredLiquidity (past quoteTtlSeconds, permissionless)
+    EXECUTED --> [*]
+    RELEASED --> [*]
+```
 
 ## Privacy Model
 
@@ -433,10 +601,11 @@ zekura/
 │   │   ├── api/                  # Fastify REST routes — validate, delegate, serialize
 │   │   ├── orderbook/            # Pure in-memory order book (Bucket, AssetBook, OrderBook) — no I/O
 │   │   ├── matcher/              # Matching engine + price-time-priority strategy — no I/O
-│   │   ├── db/                   # better-sqlite3 schema + repositories — the system of record
+│   │   ├── ppm/                  # PPM fallback: PPMService (reserve/settle orchestration), PricingEngine (quoting), TreasuryClient (Treasury circuit access)
+│   │   ├── db/                   # better-sqlite3 schema + repositories — orders/matches/settlements/reservations/treasury events, the system of record
 │   │   ├── settlement/           # settle() client + retry queue
 │   │   ├── websocket/            # SocketServer — WS event broadcast
-│   │   ├── services/             # Orchestration: OrderService, SettlementService
+│   │   ├── services/             # Orchestration: OrderService (matching + PPM fallback), SettlementService
 │   │   ├── types/                # Domain types
 │   │   ├── utils/                # Config, logging, Zod schemas, the commitment codec
 │   │   ├── app.ts                # Fastify app factory — fully testable, deps injected
@@ -447,8 +616,8 @@ zekura/
 │   └── MATCHER.md                # Matching algorithm and settlement lifecycle
 ├── web/                          # Trading UI (standalone package, own lockfile)
 │   └── src/
-│       ├── app/                  # Next.js App Router routes (/, /trade, /orders, /activity, /dashboard, /settings)
-│       ├── components/           # Page and UI components, organized by feature
+│       ├── app/                  # Next.js App Router routes (/, /trade, /orders, /activity, /dashboard, /treasury, /settings)
+│       ├── components/           # Page and UI components, organized by feature (incl. treasury/)
 │       ├── network/               # Network Manager — single source of truth for network config
 │       ├── wallet/                 # DApp Connector integration, wallet discovery, connection lifecycle
 │       ├── services/
@@ -464,7 +633,9 @@ zekura/
 ├── scripts/
 │   ├── e2e-check.ts               # Smoke check against a deployed contract
 │   └── sync-retry.ts              # Wraps a command with sync-retry semantics
-├── tests/exchange.test.ts        # Contract test suite (34 tests) — drives compiled circuits directly
+├── tests/
+│   ├── exchange.test.ts           # Order registry + settlement test suite (34 tests) — drives compiled circuits directly
+│   └── treasury.test.ts           # Treasury/PPM circuit test suite (26 tests) — deposit/withdraw/reserve/release/settleWithProtocol
 ├── docs/screenshots/              # README screenshots
 ├── docker-compose.yml            # Local devnet: node, indexer, proof server
 ├── AUDIT.md                       # Full security audit of the contract
@@ -670,7 +841,13 @@ and [`matcher/API.md`](./matcher/API.md) for the full reference.
 | `GET` | `/trades` | Recent fills for one asset |
 | `GET` | `/stats` | Rolling-window price/volume stats |
 | `GET` | `/health` | Liveness check |
-| `WS` | `/ws` | Live event stream (`order.created`, `order.matched`, `order.settling`, `order.filled`, `order.failed`, `order.cancelled`, `order.expired`) |
+| `GET` | `/treasury/balance` | Live Treasury balance/reserved/available for one asset (public — Treasury state is already public on-chain ledger data) |
+| `GET` | `/treasury/history` | Recent Treasury events (`DEPOSIT`/`WITHDRAW`/`RESERVE`/`RELEASE`/`EXECUTE`) |
+| `GET` | `/ppm/status` | Treasury liquidity plus a coarse `empty`/`healthy`/`elevated`/`critical` risk label and the active `PricingConfig` |
+| `POST` | `/admin/challenge` | Issues a signed-nonce challenge to an allowlisted admin address (first step of `MATCHER_ADMIN_ADDRESSES` wallet-signature auth) |
+| `POST` | `/admin/treasury/deposit` | Admin-only: submits a real `depositTreasury()` transaction |
+| `POST` | `/admin/treasury/withdraw` | Admin-only: submits a real `withdrawTreasury()` transaction to a specified recipient |
+| `WS` | `/ws` | Live event stream (`order.created`, `order.matched`, `order.settling`, `order.filled`, `order.failed`, `order.cancelled`, `order.expired`, `treasury.reserved`, `treasury.released`, `treasury.deposited`, `treasury.withdrawn`) |
 
 Full request/response shapes, error codes, and the WebSocket message
 contract are in [`matcher/API.md`](./matcher/API.md).
@@ -682,13 +859,18 @@ contract are in [`matcher/API.md`](./matcher/API.md).
 | Network | Contract Address | Deployed |
 |---|---|---|
 | **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` (post-audit build) | 2026-07-15 |
-| **Preprod** (default network) | `20f760d5e29cd868a2d7a25872e71cb042d8f68130e932a13e5111e5136d05c9` (post-Treasury build, staged deploy — see Deployment.md) | 2026-07-17 |
+| **Preprod** (default network) | `20f760d5e29cd868a2d7a25872e71cb042d8f68130e932a13e5111e5136d05c9` (post-Treasury build, all 13 circuits, staged deploy — see below and Deployment.md) | 2026-07-17 |
 | Undeployed (local devnet) | not persistent — redeploy via `npm run setup` | — |
 
-Both networks run the **identical audited contract build**. See
+**The two networks currently run different builds.** Preprod runs the full
+post-Treasury contract (13 circuits, Treasury/PPM included). Preview is
+**stale** — it still runs the pre-Treasury 5-circuit build from 2026-07-15
+and has no Treasury/PPM circuits at all; redeploying it with the same
+staged-deploy process is tracked in ["Roadmap"](#roadmap). See
 [`Deployment.md`](./Deployment.md) for the full deployment record (deployer
 addresses, funding, and every verification pass) and [`AUDIT.md`](./AUDIT.md)
-for the security review that produced this build.
+for the security review — which predates the Treasury/PPM module and does
+not cover it (see ["Security"](#security)).
 
 ### Compile
 
@@ -697,10 +879,12 @@ npm run compile
 ```
 
 Compiles [`contracts/exchange.compact`](./contracts/exchange.compact) to
-`contracts/managed/exchange/` — 5 circuits (`createOrder`, `getOrder`,
-`cancelOrder`, `expireOrder`, `settle`, plus the exported `pure` circuit
-`deriveOwnerId`), compiler `0.31.1`, language version `0.23.0`, runtime
-`0.16.0`.
+`contracts/managed/exchange/` — 13 circuits (`createOrder`, `getOrder`,
+`cancelOrder`, `expireOrder`, `settle`, `addAdmin`, `removeAdmin`,
+`depositTreasury`, `withdrawTreasury`, `reserveLiquidity`,
+`releaseLiquidity`, `releaseExpiredLiquidity`, `settleWithProtocol`), plus 3
+exported `pure` circuits (`deriveOwnerId`, `deriveAssetKey`, `deriveAdminId`),
+compiler `0.31.1`, language version `0.23.0`, runtime `0.16.0`.
 
 ### Deploy
 
@@ -725,6 +909,40 @@ verifier key — use `npm run setup -- --network <preview|preprod>`, then
 update `web/.env.local`'s matching `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_*`
 variable and this table.
 
+#### Staged deployment (Midnight Preprod block-weight limit)
+
+A single `deployContract` transaction for the full 13-circuit contract
+exceeds Midnight Preprod's per-transaction block-weight limit
+(`Transaction would exhaust the block limits`) — registering 13 circuits'
+verifier keys in one transaction is simply too much weight, independent of
+anything about this contract's logic. **No functionality was removed** to
+work around this; instead the contract is deployed in stages:
+
+1. **Core circuits are deployed first.** `scripts/deploy-staged.ts` deploys a
+   reduced build of `contracts/exchange.compact` truncated right after
+   `settle()` (i.e. just the 5 pre-Treasury circuits) — every ledger
+   declaration is identical to the full contract, so the on-chain layout
+   this produces is byte-identical to what deploying the full contract would
+   have produced (verified by diffing both builds' `contract-info.json`
+   ledger sections before deploying).
+2. **Remaining verifier keys are inserted using Midnight's maintenance-authority
+   mechanism.** The remaining 8 Treasury/PPM circuits' verifier keys are then
+   added one at a time to the already-deployed contract via
+   `submitInsertVerifierKeyTx` (`@midnight-ntwrk/midnight-js-contracts`),
+   signed by the contract maintenance authority (CMA) key `deployContract`
+   auto-generates for this purpose.
+3. **All 13 circuits are deployed and live once staging completes** — from
+   that point on, `settleWithProtocol`, `depositTreasury`, and every other
+   Treasury circuit are callable exactly as if they'd been part of one
+   deploy transaction, because on-chain they now are part of the same
+   contract at the same address.
+
+This is a real, recurring constraint — any future circuit additions to this
+contract will likely need the same staged treatment, not just a one-off fix
+for this deploy. See [`Deployment.md`](./Deployment.md)'s "Post-Treasury
+staged redeploy" entry for the full record, including the exact transaction
+sequence and independent on-chain verification.
+
 ### Circuits
 
 | Circuit | Authorization | Purpose |
@@ -734,7 +952,16 @@ variable and this table.
 | `cancelOrder(orderId)` | `deriveOwnerId(ownerSecretKey()) == details.owner` | Owner-only cancellation |
 | `expireOrder(orderId)` | Time-based (`blockTimeGte(expiresAt)`) — callable by anyone once expired | Marks a past-expiry order `EXPIRED` |
 | `settle(buyOrderId, sellOrderId)` | Commitment verification + business-rule asserts, no caller-identity check (intentional — callable by the Matcher on behalf of two other parties) | Atomically fills a matching pair |
+| `addAdmin(newAdmin)` / `removeAdmin(admin)` | `requireAdmin()` (`deriveAdminId(adminSecretKey()) ∈ admins`); `removeAdmin` additionally refuses to remove the last remaining admin | Rotates the on-chain admin set that gates Treasury funding |
+| `depositTreasury(assetKey, amount)` | Admin-only | Pulls real tokens into the contract via `receiveUnshielded`, increments `treasuryBalances` — the only way Treasury liquidity is ever created |
+| `withdrawTreasury(assetKey, amount, recipient)` | Admin-only | Pays out unreserved Treasury balance (`amount + reserved <= balance`) to any recipient |
+| `reserveLiquidity(quoteId, assetKey, amount, price, expiresAt)` | No caller-identity check (same trust level as `settle()`) — gated only by the state machine and actual available balance | Holds Treasury liquidity against a PPM quote before it's used |
+| `releaseLiquidity(quoteId)` | No caller-identity check | Un-reserves a still-open hold (e.g. settlement failed, order cancelled) |
+| `releaseExpiredLiquidity(quoteId)` | Time-based (`blockTimeGte(expiresAt)`) — callable by anyone once expired | Permissionless safety valve reclaiming an expired, still-open reservation |
+| `settleWithProtocol(orderId, quoteId, recipient)` | Commitment verification + business-rule asserts, no caller-identity check | Fills one user order against an open PPM reservation instead of a second user order |
 | `deriveOwnerId(secretKey)` *(pure, exported)* | — | Derives a wallet's DApp-specific pseudonymous identity, so off-chain code can compute the identical value |
+| `deriveAssetKey(asset)` *(pure, exported)* | — | Maps an `Either<shielded, unshielded>` asset descriptor to the `Bytes<32>` key the Treasury's ledger `Map`s actually use |
+| `deriveAdminId(secretKey)` *(pure, exported)* | — | Derives an admin wallet's on-chain identity for `requireAdmin()`, so off-chain admin tooling can compute the identical value |
 
 ### State machine
 
@@ -758,18 +985,18 @@ underneath this.
 ## Testing
 
 Three independent, offline test suites — no devnet, proof server, or wallet
-required for any of them — cover **238 tests** across the whole system:
+required for any of them — cover **284 tests** across the whole system:
 
 ```bash
-npm run test                     # root: 34 tests — contracts/exchange.compact
-npm run test --workspace=matcher  # matcher: 185 tests — order book, matching, settlement, API
-cd web && npm run test            # web: 19 tests — commitment codec, formatting, order-status logic
+npm run test                     # root: 60/60 — contracts/exchange.compact (34 order/settlement + 26 Treasury/PPM)
+npm run test --workspace=matcher  # matcher: 205/205 — order book, matching, settlement, PPM, Treasury, API
+cd web && npm run test            # web: 19/19 — commitment codec, formatting, order-status logic
 ```
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| **Root** (`tests/exchange.test.ts`) | 34 | Drives the compiled circuits directly through `@midnight-ntwrk/compact-runtime`'s in-memory `CircuitContext`. Covers `createOrder`/`getOrder`/`cancelOrder` positive and negative paths (including the owner-identity regression test for the audit's P0 finding), `settle`/`expireOrder` matching, mismatches, replay, atomicity, boundary values, and the **privacy invariant** test — asserting the ledger never leaks `amount`, `price`, `owner`, `asset`, `isBuy`, or `expiresAt`. |
-| **Matcher** (`matcher/tests/`) | 185, >95% line coverage enforced | The in-memory order book, price-time-priority matching engine, SQLite persistence, settlement retry queue, REST/WebSocket API, and commitment verification against on-chain state — exercised with real SQLite (`:memory:`) and a real matching engine; only the two seams that face the live network (`SettleCircuitCaller`, `OnChainOrderReader`) are faked. |
+| **Root** (`tests/exchange.test.ts` + `tests/treasury.test.ts`) | 60 (34 + 26) | Drives the compiled circuits directly through `@midnight-ntwrk/compact-runtime`'s in-memory `CircuitContext`. `exchange.test.ts` covers `createOrder`/`getOrder`/`cancelOrder` positive and negative paths (including the owner-identity regression test for the audit's P0 finding), `settle`/`expireOrder` matching, mismatches, replay, atomicity, boundary values, and the **privacy invariant** test — asserting the ledger never leaks `amount`, `price`, `owner`, `asset`, `isBuy`, or `expiresAt`. `treasury.test.ts` covers admin-only enforcement on `depositTreasury`/`withdrawTreasury`, admin rotation (including the last-admin-cannot-be-removed guard), the full `reserveLiquidity` → `settleWithProtocol`/`releaseLiquidity`/`releaseExpiredLiquidity` lifecycle for both BUY and SELL, and rejection paths (insufficient balance, duplicate quote id, expired reservation, amount/asset mismatch, replay). |
+| **Matcher** (`matcher/tests/`) | 205, >95% line coverage enforced | The in-memory order book, price-time-priority matching engine, SQLite persistence, settlement retry queue, REST/WebSocket API, commitment verification against on-chain state, and the PPM's `PricingEngine` (spread/inventory-skew quoting, risk-limit enforcement) and `PPMService` (quote → reserve → settle orchestration, BUY-only enforcement, expired-reservation sweep) — exercised with real SQLite (`:memory:`) and real matching/pricing logic; only the seams that face the live network (`SettleCircuitCaller`, `OnChainOrderReader`, `PpmCircuitCaller`, `OnChainTreasuryReader`) are faked. |
 | **Web** (`web/tests/`) | 19 | The browser-side `OrderDetails` commitment codec (determinism and no-collision checks on the exact `persistentCommit` encoding a wallet must reproduce bit-for-bit) and the pure formatting/order-status logic the UI renders from. |
 
 ```bash
@@ -779,6 +1006,11 @@ npm run build --workspace=matcher # matcher: tsc build
 cd web && npm run lint            # web: eslint
 cd web && npm run build           # web: production Next.js build
 ```
+
+Latest verified results across all three packages: **TypeScript — clean**
+(root, matcher, and web all typecheck with 0 errors), **Lint — clean**
+(matcher and web both eslint-clean), **Production build — passing** (web's
+Next.js production build succeeds, including the `/treasury` route).
 
 **Coverage:** the matcher enforces >95% line/statement coverage in CI via
 `npm run test:coverage` (`@vitest/coverage-v8`). The contract suite is
@@ -796,8 +1028,8 @@ check:
 ```mermaid
 flowchart LR
     A["compile-contract<br/>installs the Compact toolchain,<br/>compiles exchange.compact,<br/>uploads the artifact"]
-    B["contract-tests<br/>root typecheck + 34 tests"]
-    C["matcher<br/>typecheck + lint + 185 tests"]
+    B["contract-tests<br/>root typecheck + 60 tests"]
+    C["matcher<br/>typecheck + lint + 205 tests"]
     D["web<br/>typecheck + lint + 19 tests + production build"]
     A --> B
     A --> C
@@ -815,8 +1047,8 @@ and `web` then run **in parallel**, each downloading that artifact.
 | Job | Steps |
 |---|---|
 | `compile-contract` | Install the pinned Compact toolchain (`compact update 0.31.1`) → `compact compile` → upload `contracts/managed/exchange` as an artifact |
-| `contract-tests` | Download the artifact → `npm ci` (root) → `npm run build` (typecheck) → `npm run test` (34 tests) |
-| `matcher` | Download the artifact → `npm ci` (root) → `npm run typecheck --workspace=matcher` → `npm run lint --workspace=matcher` → `npm run test --workspace=matcher` (185 tests) |
+| `contract-tests` | Download the artifact → `npm ci` (root) → `npm run build` (typecheck) → `npm run test` (60 tests: 34 order/settlement + 26 Treasury/PPM) |
+| `matcher` | Download the artifact → `npm ci` (root) → `npm run typecheck --workspace=matcher` → `npm run lint --workspace=matcher` → `npm run test --workspace=matcher` (205 tests) |
 | `web` | Download the artifact → `npm ci` (in `web/`) → `npm run typecheck` → `npm run lint` → `npm run test` (19 tests) → `npm run build` (production Next.js build) |
 
 A compilation failure, a type error, a lint violation, a failing test, or a
@@ -843,6 +1075,45 @@ issues were found. **Production Readiness Score: 10/10** as of the
 2026-07-16 addendum, after both a fresh deployment past the fixed
 `cancelOrder` verifier key and a live end-to-end verification pass on
 Preprod (see [`Deployment.md`](./Deployment.md)).
+
+**Scope note:** this audit predates the Treasury/PPM module (`AUDIT.md`
+contains no mention of either) — its findings and 10/10 score cover the
+order registry and `settle()` only. The Treasury/PPM trust model below
+documents that module's own authorization design in the meantime; it has
+not yet been through the same independent audit process.
+
+### Treasury / PPM trust model
+
+- **Non-custodial user trading** — unchanged by the Treasury's existence.
+  Deposits into the Treasury are an explicit admin action
+  (`depositTreasury`), never something a user's trade implicitly does; a
+  user's own funds are never in Treasury custody.
+- **Treasury-backed protocol liquidity** — every PPM fill is backed 1:1 by a
+  real balance in `treasuryBalances`; see ["Proactive Market Maker (PPM)"](#proactive-market-maker-ppm).
+- **Reservation-based accounting** — liquidity is always `reserveLiquidity()`'d
+  before it can be used and finalized via `settleWithProtocol()` or
+  `releaseLiquidity()`/`releaseExpiredLiquidity()` afterward; `available`
+  (`balance − reserved`) is computed live, never a separately-tracked figure
+  that could drift out of sync.
+- **On-chain settlement** — `settleWithProtocol` is a real circuit call with
+  a real transaction id, exactly like `settle()`; there is no off-chain-only
+  notion of a "protocol fill."
+- **Admin-controlled Treasury operations** — `depositTreasury`,
+  `withdrawTreasury`, `addAdmin`, and `removeAdmin` are the only
+  admin-gated circuits in the contract; every other Treasury/PPM circuit
+  (`reserveLiquidity`, `releaseLiquidity`, `releaseExpiredLiquidity`,
+  `settleWithProtocol`) intentionally has no caller-identity check, at the
+  same trust level as `settle()` itself — gated only by the state machine
+  and the actual on-chain balance, not by who submits the transaction.
+- **BUY-side-only protocol liquidity in MVP** — see
+  ["Proactive Market Maker (PPM)"](#proactive-market-maker-ppm)'s MVP
+  limitation section for why, and why it's a deliberate scope boundary
+  rather than an oversight.
+- **Comprehensive contract, backend and frontend test coverage** — 26
+  dedicated contract-level Treasury tests (`tests/treasury.test.ts`) plus
+  Matcher-level `PricingEngine`/`PPMService` unit and integration tests (see
+  ["Testing"](#testing)) exercise this module to the same standard as the
+  rest of the system.
 
 ### Replay protection
 
@@ -891,6 +1162,9 @@ this purpose.
 | `cancelOrder` | `deriveOwnerId(ownerSecretKey()) == details.owner` — the audit's fix. |
 | `expireOrder` | Time-based (`blockTimeGte`), correctly not identity-gated — expiry is a public fact. |
 | `settle` | Commitment verification (proof of knowledge of both orders) + business-rule asserts; intentionally no caller-identity check, since `settle` is meant to be callable by the Matcher on behalf of two other parties. |
+| `addAdmin` / `removeAdmin` | `requireAdmin()` — `deriveAdminId(adminSecretKey())` must be in the on-chain `admins` set. |
+| `depositTreasury` / `withdrawTreasury` | Admin-only (`requireAdmin()`). The only circuits that move Treasury balance in/out of the contract. |
+| `reserveLiquidity` / `releaseLiquidity` / `releaseExpiredLiquidity` / `settleWithProtocol` | No caller-identity check (same trust level as `settle`), except `releaseExpiredLiquidity`'s implicit time gate (`blockTimeGte`) — gated by the state machine and actual available balance, not by who submits the transaction; meant to be callable by the Matcher's PPM component on behalf of a resting user order. |
 
 ### Responsible disclosure
 
@@ -908,6 +1182,8 @@ can land before public disclosure.
 | P3-1 | `settle`/`expireOrder` place no bound on `expiresAt` — a wallet can commit to an order that never expires or expires immediately. Only affects the order's own owner. | Accepted — flagged for wallet-side input validation. |
 | P3-2 | Commitment/blinding-factor hygiene is unenforceable on-chain — a buggy or malicious wallet that reuses a blinding factor across two orders with identical contents produces linkable commitments. | Accepted — a wallet-implementation requirement, not fixable in-contract. |
 | P3-3 | `getOrder` costs a full transaction for a public read that's available for free from the indexer. | Informational — `getOrder` is a scoped deliverable; the frontend should prefer the indexer for reads. |
+| P3-4 | PPM protocol-liquidity fills only support the BUY side; a resting SELL order never receives a protocol fill, only a user counterparty. | **Accepted, explicit MVP decision, not a bug** — see ["Proactive Market Maker (PPM)"](#proactive-market-maker-ppm). Requires a secure multi-asset custody/escrow leg to close; tracked in ["Roadmap"](#roadmap). |
+| P3-5 | `AUDIT.md`'s independent security review predates the Treasury/PPM module and does not cover `depositTreasury`/`withdrawTreasury`/`reserveLiquidity`/`releaseLiquidity`/`releaseExpiredLiquidity`/`settleWithProtocol`/`addAdmin`/`removeAdmin`. | Informational — see the Treasury/PPM trust model above for that module's own (unaudited) design rationale; a follow-up audit pass covering it is tracked in ["Roadmap"](#roadmap). |
 
 ## Performance
 
@@ -975,10 +1251,13 @@ already flag as open work — not speculative feature ideas.
 
 - **A literal wallet-extension click-through.** Every code path the demo
   flow exercises has been driven directly (same SDK calls, same providers)
-  or covered by the 238 automated tests, and the production build renders
+  or covered by the 284 automated tests, and the production build renders
   every route cleanly — but a real browser session with a funded 1AM/Lace
   wallet performing the actual approval pop-up flow has not yet been
   recorded (see [`Deployment.md`](./Deployment.md)'s "Not yet exercised" notes).
+- **Redeploy Preview with the Treasury/PPM build.** Preview is stale (still
+  the pre-Treasury 5-circuit build) — see ["Smart Contracts"](#smart-contracts).
+  The same staged-deploy process already used for Preprod applies directly.
 - **Off-chain mitigations for the audit's accepted risks** (P2-1 `orderId`
   squatting, P3-1 unbounded `expiresAt`, P3-2 blinding-factor hygiene) —
   wallet-side input validation and unpredictable `orderId` derivation.
@@ -987,6 +1266,16 @@ already flag as open work — not speculative feature ideas.
 
 ### Mid-term
 
+- **SELL-side PPM protocol liquidity.** Requires a secure multi-asset
+  custody/escrow leg so a user's asset can be taken as a transaction input
+  during `settleWithProtocol` — intentionally out of scope for the MVP; see
+  ["Proactive Market Maker (PPM)"](#proactive-market-maker-ppm).
+- **An independent audit pass covering the Treasury/PPM module** —
+  `AUDIT.md`'s existing review predates it (see ["Security"](#security)'s
+  scope note); `depositTreasury`/`withdrawTreasury`/`reserveLiquidity`/
+  `releaseLiquidity`/`releaseExpiredLiquidity`/`settleWithProtocol`/
+  `addAdmin`/`removeAdmin` have not yet been through the same process as the
+  order registry and `settle()`.
 - **Horizontal Matcher scaling** for order volume beyond a single process
   (see ["Performance"](#performance)).
 - **A dedicated stats/candle store** to avoid recomputing `/stats` from raw
@@ -1079,8 +1368,27 @@ default `http://127.0.0.1:6300`) for Lace sessions only.
 **Does Zekura ever see my private keys or hold my funds?**
 No. Zekura is non-custodial — wallets sign and submit their own
 `createOrder`/`cancelOrder` transactions directly. The Matcher only submits
-`settle()` for pairs it has independently verified against the chain, and
-never holds an order's `ownerSecretKey`.
+`settle()`/`settleWithProtocol()` for orders it has independently verified
+against the chain, and never holds an order's `ownerSecretKey`. This applies
+equally to PPM fills — the Treasury the PPM draws on is protocol-owned
+liquidity, never a user's funds.
+
+**What is the PPM, and where does its liquidity come from?**
+The Proactive Market Maker is the Matcher's fallback for a resting order
+that finds no user counterparty — it fills the order out of the Treasury,
+the contract's own protocol-owned liquidity pool, funded only by real admin
+deposits. It never mints or fabricates liquidity; see
+["Proactive Market Maker (PPM)"](#proactive-market-maker-ppm) and
+["Treasury"](#treasury).
+
+**Does the PPM support both buy and sell orders?**
+Not yet. User↔user matching supports both sides; PPM fills are currently
+BUY-side only, because the SELL side would require the Treasury to receive
+a user's asset as part of the settlement transaction, which needs a secure
+multi-asset custody/escrow leg this MVP doesn't yet have. This is an
+explicit design decision, not a bug — see
+["Proactive Market Maker (PPM)"](#proactive-market-maker-ppm)'s MVP
+limitation section.
 
 **What exactly stays private, and what becomes public?**
 See ["Privacy Model"](#privacy-model) — in short, only a commitment and a
@@ -1113,7 +1421,8 @@ match (see [`matcher/MATCHER.md`](./matcher/MATCHER.md)).
 **Has this been audited?**
 Yes — see [`AUDIT.md`](./AUDIT.md). One P0 finding (an authorization bypass
 in `cancelOrder`) was found and fixed; production readiness score 10/10
-after a live end-to-end verification pass on Preprod.
+after a live end-to-end verification pass on Preprod. That audit predates
+the Treasury/PPM module, though — see ["Security"](#security)'s scope note.
 
 ## License
 
