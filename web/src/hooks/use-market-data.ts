@@ -126,7 +126,7 @@ export function useMarketData(pair: AssetPair): MarketDataState {
   });
 
   useEffect(() => {
-    const asset: MatcherEitherAsset = { isLeft: true, left: pair.baseAssetId, right: pair.quoteAssetId };
+    const asset: MatcherEitherAsset = { isLeft: pair.assetIsLeft, left: pair.baseAssetId, right: pair.quoteAssetId };
     let cancelled = false;
 
     setState({ orderBook: null, trades: [], stats: null, treasury: null, ppmStatus: null, loading: true, error: null });
@@ -267,7 +267,7 @@ export function useMarketData(pair: AssetPair): MarketDataState {
       window.clearInterval(orderBookInterval);
       window.clearInterval(treasuryInterval);
     };
-  }, [pair.baseAssetId, pair.quoteAssetId]);
+  }, [pair.baseAssetId, pair.quoteAssetId, pair.assetIsLeft]);
 
   return state;
 }

@@ -195,8 +195,22 @@ circuit recordEvent(kind: EventKind, orderId: Bytes<32>): [] {
 // receiveUnshielded/sendUnshielded's tokenType argument both use. Exported
 // (and pure) so the Matcher can compute the identical key off-chain, the
 // same way deriveOwnerId is exported for wallet-side use.
+//
+// For a real unshielded asset (is_left == false), the key MUST be the raw
+// on-chain token type unchanged — receiveUnshielded/sendUnshielded move
+// tokens of exactly that type, so hashing it here would make the Treasury
+// bucket key diverge from any token a depositor could actually hold,
+// permanently bricking depositTreasury for every asset (this was a real bug:
+// the previous unconditional persistentHash(asset) made every asset
+// undepositable). A shielded asset (is_left == true) carries an opaque
+// off-chain id instead of a real token type, so it's still domain-hashed —
+// it was never depositable via receiveUnshielded to begin with.
 export pure circuit deriveAssetKey(asset: Either<Bytes<32>, Bytes<32> >): Bytes<32> {
-  return persistentHash<Either<Bytes<32>, Bytes<32> > >(asset);
+  if (asset.is_left) {
+    return persistentHash<Bytes<32> >(asset.left);
+  } else {
+    return asset.right;
+  }
 }
 
 // Derives a caller's DApp-specific admin identity from their own secret.

@@ -18,12 +18,29 @@ export type OrderStatus =
 
 export type ExpiryOption = "10m" | "30m" | "1h" | "GTC";
 
+/**
+ * A pair's on-chain `asset` field is an `Either<Bytes<32>, Bytes<32>>` whose
+ * meaning depends on `is_left` (contracts/exchange.compact's deriveAssetKey):
+ *   - `is_left: true`  — a shielded/opaque pair id. deriveAssetKey hashes it,
+ *     so the Treasury can never hold real backing for it (no token can equal
+ *     a hash of itself) — fine for display-only or off-chain-settled pairs,
+ *     but PPM/Treasury deposits are impossible.
+ *   - `is_left: false` — a real unshielded asset. deriveAssetKey returns
+ *     `quoteAssetId`/`right` UNCHANGED, so it must be a genuine on-chain
+ *     token type (receiveUnshielded/sendUnshielded move exactly that type).
+ *     This is the only shape PPM/Treasury funding can work against.
+ *
+ * See lib/mock/market.ts's `ASSET_PAIRS` for which pair currently uses which
+ * shape, and its doc comment for the tZKR migration path.
+ */
 export interface AssetPair {
   id: string;
   base: string;
   quote: string;
   baseAssetId: string;
   quoteAssetId: string;
+  /** Either.is_left for this pair's on-chain `asset` field — see doc comment above. */
+  assetIsLeft: boolean;
 }
 
 /** price/amount/expiresAt are decimal strings on the wire (Uint<128>/Uint<64> can exceed Number.MAX_SAFE_INTEGER). */

@@ -89,12 +89,14 @@ export function useSubmitOrder() {
         const expiresAt = BigInt(expiryToUnixSeconds(input.expiry));
 
         const details: OrderDetailsValue = {
-          // This app's baseAssetId/quoteAssetId are placeholder Bytes<32>
-          // identifiers for its own demo trading pairs (see lib/mock/market.ts)
-          // — the contract's `asset` field doesn't document which side of
-          // Either is "base" vs "quote", so `left`/`right` here are just this
-          // app's own consistent convention for round-tripping the pair.
-          asset: { is_left: true, left: hexToBytes32(input.pair.baseAssetId), right: hexToBytes32(input.pair.quoteAssetId) },
+          // is_left mirrors input.pair.assetIsLeft — see lib/types.ts's
+          // AssetPair doc comment for what it selects and why only
+          // assetIsLeft: false pairs can be Treasury/PPM-funded.
+          asset: {
+            is_left: input.pair.assetIsLeft,
+            left: hexToBytes32(input.pair.baseAssetId),
+            right: hexToBytes32(input.pair.quoteAssetId),
+          },
           isBuy: input.side === "BUY",
           price: BigInt(input.price),
           amount: BigInt(input.amount),
@@ -133,7 +135,7 @@ export function useSubmitOrder() {
 
         const { order } = await submitOrder({
           id: toHex(orderId),
-          asset: { isLeft: true, left: input.pair.baseAssetId, right: input.pair.quoteAssetId },
+          asset: { isLeft: input.pair.assetIsLeft, left: input.pair.baseAssetId, right: input.pair.quoteAssetId },
           side: input.side,
           price: input.price,
           amount: input.amount,

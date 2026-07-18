@@ -4,55 +4,53 @@ import type { AssetPair, MarketInsights } from "@/lib/types";
 // Demo trading-pair asset registry
 // ---------------------------------------------------------------------------
 //
-// This app's baseAssetId/quoteAssetId are Bytes<32> identifiers (64-hex) for
-// its own demo trading pairs. They flow into an order's confidential `asset`
-// field as Either.left(baseAssetId, quoteAssetId); the contract's
-// deriveAssetKey(asset) hashes that whole Either into the on-chain
-// Treasury/settlement key. The exchange treats the asset as an opaque id.
-//
-// tZKR (Zekura Test Token) is a REAL project-owned fungible token deployed on
-// Preprod — its asset id below is the token's actual deployed contract
-// address, so the demo pair references a live on-chain asset rather than a
-// throwaway placeholder. tNIGHT keeps a stable placeholder id (it stands in
-// for native NIGHT, which the contract never custodies here).
+// Each pair's on-chain `asset` field is an Either<Bytes<32>, Bytes<32>> — see
+// lib/types.ts's AssetPair doc comment for what `assetIsLeft` controls and
+// why only an `assetIsLeft: false` pair can ever be Treasury/PPM-funded.
 //
 //   tZKR Preprod contract: see README "Smart Contracts" address table.
 
-/** Real deployed tZKR (Zekura Test Token) contract address on Preprod — used
- *  as the tZKR asset id so the default pair points at a live on-chain token. */
+/** Real deployed tZKR (Zekura Test Token) contract address on Preprod. NOT
+ *  currently used as a pair's on-chain `asset` id — see PPM_ASSET_ADAPTER's
+ *  doc comment for why, and what real integration would require. */
 export const TZKR_ASSET_ID =
   "b16fbbec8ed99e38b16aa56166a646a1c71fd4a8e902fd0e357825d9a59efea4";
 
-/** Stable placeholder id for native tNIGHT (the demo base asset). */
+/** Stable placeholder id for native tNIGHT (display-only; distinct from the PPM adapter's real NIGHT token type below). */
 export const TNIGHT_ASSET_ID = "c3".padEnd(64, "0");
 
-export const ASSET_PAIRS: AssetPair[] = [
-  {
-    id: "tNIGHT-tZKR",
-    base: "tNIGHT",
-    quote: "tZKR",
-    baseAssetId: TNIGHT_ASSET_ID,
-    quoteAssetId: TZKR_ASSET_ID,
-  },
-];
+/**
+ * PPM asset adapter — hackathon placeholder for the pair the PPM/Treasury
+ * demo actually trades, kept deliberately separate from TZKR_ASSET_ID/
+ * TNIGHT_ASSET_ID above so swapping it later touches exactly one place.
+ *
+ * `quoteAssetId` here is nativeToken()'s real on-chain token type (32 zero
+ * bytes) — with `assetIsLeft: false`, contracts/exchange.compact's
+ * deriveAssetKey returns it unchanged, so Treasury deposits/reserves/
+ * settleWithProtocol all move genuine NIGHT the operator wallet actually
+ * holds. It is NOT a tNIGHT/tZKR pair; `base`/`quote` labels are cosmetic
+ * for this adapter and intentionally say so.
+ *
+ * tZKR migration path (once exchange.compact can call into tzkr-token.compact
+ * — see contracts/tzkr-token.compact's header: tZKR is a fully custom
+ * OpenZeppelin FungibleToken contract, not a native unshielded token, so
+ * receiveUnshielded/sendUnshielded cannot move it today):
+ *   1. Give exchange.compact a cross-contract call into tzkr-token's
+ *      transfer/transferFrom for the asset leg (settleWithProtocol,
+ *      depositTreasury, withdrawTreasury).
+ *   2. Replace this adapter entry with `quoteAssetId: TZKR_ASSET_ID`.
+ *   3. Nothing else in web/matcher changes — every consumer reads
+ *      ASSET_PAIRS/DEFAULT_PAIR, never this adapter's fields directly.
+ */
+const PPM_ASSET_ADAPTER: AssetPair = {
+  id: "NIGHT-PPM-DEMO",
+  base: "NIGHT",
+  quote: "NIGHT (PPM demo adapter)",
+  baseAssetId: "00".repeat(32),
+  quoteAssetId: "00".repeat(32),
+  assetIsLeft: false,
+};
+
+export const ASSET_PAIRS: AssetPair[] = [PPM_ASSET_ADAPTER];
 
 export const DEFAULT_PAIR = ASSET_PAIRS[0];
-
-export function getMarketInsights(midPrice: number): MarketInsights {
-  return {
-    suggestedBuy: { low: round(midPrice * 0.976), high: round(midPrice * 1.005) },
-    suggestedSell: { low: round(midPrice * 0.995), high: round(midPrice * 1.025) },
-    liquidityZones: {
-      strong: { low: round(midPrice * 0.976), high: round(midPrice * 1.005) },
-      moderate: { low: round(midPrice * 1.0), high: round(midPrice * 1.036) },
-      emerging: { low: round(midPrice * 1.036), high: round(midPrice * 1.06) },
-    },
-    activityLevel: "Medium",
-    volatility: "Medium",
-    estimatedSettlementSeconds: { low: 30, high: 90 },
-  };
-}
-
-function round(value: number): number {
-  return Math.round(value * 1000) / 1000;
-}
