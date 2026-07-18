@@ -116,7 +116,7 @@ export function TradePage() {
           <div className="min-h-[480px] border-b border-border lg:col-span-2 lg:border-b-0 lg:border-r xl:col-span-1">
             <TradingChart
               pairLabel={`${pair.base}/${pair.quote}`}
-              basePrice={midPrice}
+              pair={pair}
             />
           </div>
           <div className="border-b border-border lg:border-b-0 lg:border-r">

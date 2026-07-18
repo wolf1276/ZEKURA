@@ -11,10 +11,20 @@ import type { AssetPair, MarketInsights } from "@/lib/types";
 // Treasury/settlement key. The exchange treats the asset as an opaque id.
 //
 // tZKR (Zekura Test Token) is a REAL project-owned fungible token deployed on
-// Preprod — its asset id below is the token's actual deployed contract
-// address, so the demo pair references a live on-chain asset rather than a
-// throwaway placeholder. tNIGHT keeps a stable placeholder id (it stands in
-// for native NIGHT, which the contract never custodies here).
+// Preprod at the address below. IMPORTANT: this id is NOT a real on-chain
+// unshielded token type — tZKR is built on OpenZeppelin Compact's
+// FungibleToken module, which keeps balances in its own contract-internal
+// ledger, not the chain's unshielded-color system the Exchange Treasury
+// actually moves funds through (receiveUnshielded/sendUnshielded). So while
+// this id is a genuine deployed contract address, the Exchange contract
+// cannot custody it — deriveAssetKey(this id) is a hash with no real
+// backing UTXOs, confirmed by a live read of the deployed Treasury ledger
+// (it has zero entries for any tZKR-derived key, ever). See
+// docs/ARCHITECTURE_TZKR_UNSHIELDED_MIGRATION.md for the full root cause and
+// the production fix (rebuilding tZKR as a genuine unshielded token). tNIGHT
+// keeps a stable placeholder id (it stands in for native NIGHT, which the
+// contract never custodies via this field — NIGHT moves through
+// settleWithProtocol's implicit nativeToken() payment leg instead).
 //
 //   tZKR Preprod contract: see README "Smart Contracts" address table.
 

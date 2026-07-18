@@ -859,9 +859,25 @@ contract are in [`matcher/API.md`](./matcher/API.md).
 | Network | Contract Address | Deployed |
 |---|---|---|
 | **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` (post-audit build) | 2026-07-15 |
-| **Preprod** (default network) | `831aa0d2c2b49286f0736bb6f60b0d8b90aa09e043930e5182a129428a456734` (NIGHT-payment-leg + SELL-PPM build, 12 circuits — see below and Deployment.md) | 2026-07-17 |
-| **Preprod — tZKR token** | `461009399dcd6e196376c3e8d470f8ba801a1d0d9262ead39a0684f500f85f89` (`contracts/tzkr-token.compact`) | 2026-07-17 |
+| **Preprod** (default network) | `20f760d5e29cd868a2d7a25872e71cb042d8f68130e932a13e5111e5136d05c9` (NIGHT-payment-leg + SELL-PPM build, 12 circuits — see below and Deployment.md) | 2026-07-17 |
+| **Preprod — tZKR token** | `b16fbbec8ed99e38b16aa56166a646a1c71fd4a8e902fd0e357825d9a59efea4` (`contracts/tzkr-token.compact`) | 2026-07-17 |
 | Undeployed (local devnet) | not persistent — redeploy via `npm run setup` | — |
+
+**tZKR cannot currently move through Treasury** (BUY/SELL against protocol
+liquidity) — this is a genuine Compact/Midnight platform limitation (no
+contract-to-contract calls yet), not a wiring gap. Confirmed 2026-07-19 by a
+live read-only query of the deployed contract's ledger. Full root cause and
+production redesign plan:
+[`docs/ARCHITECTURE_TZKR_UNSHIELDED_MIGRATION.md`](./docs/ARCHITECTURE_TZKR_UNSHIELDED_MIGRATION.md).
+The NIGHT-only side of Treasury/PPM is unaffected and has real on-chain
+evidence of working correctly.
+
+**This table is hand-maintained and has drifted from the real deployment
+record before** (two stale addresses were live in this file for two days
+undetected). The actual source of truth is the git-ignored
+`.midnight-state.json` / `.midnight-tzkr.json` the deploy scripts write —
+cross-check against those (or a live indexer read) before trusting this
+table, especially after any redeploy.
 
 **The two networks currently run different builds.** Preprod runs the latest
 contract (Treasury/PPM plus a real NIGHT payment leg on `settleWithProtocol`

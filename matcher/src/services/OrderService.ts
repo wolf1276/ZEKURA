@@ -16,13 +16,6 @@ import { verifyOrderSignature } from '../utils/orderDetailsCodec.js';
 import type { Logger } from '../utils/logger.js';
 import type { Broadcaster } from '../websocket/SocketServer.js';
 import type Database from 'better-sqlite3';
-// ==============================
-// DEMO MODE START
-// ==============================
-import { isDemoPpmSellEnabled } from '../demo/ppmSellDemo.js';
-// ==============================
-// DEMO MODE END
-// ==============================
 
 function isUniqueConstraintViolation(error: unknown): boolean {
   return error instanceof Error && 'code' in error && (error as { code?: string }).code === 'SQLITE_CONSTRAINT_PRIMARYKEY';
@@ -253,24 +246,6 @@ export class OrderService {
             expiresAt: ppmResult.expiresAt.toString(),
           });
 
-          // ==============================
-          // DEMO MODE START
-          // ==============================
-          // Hackathon demo only (DEMO_PPM_SELL=true): don't make the SELL
-          // flow wait for a poll or the periodic sweep to notice the
-          // simulated settlement — reconcile inline so this same HTTP
-          // response already reflects FILLED. Reuses the exact same
-          // reconcileProtocolFill() production code path below; the actual
-          // bypass of the on-chain confirmation check lives there, not
-          // here. See matcher/src/demo/ppmSellDemo.ts.
-          if (order.side === 'SELL' && isDemoPpmSellEnabled()) {
-            const filled = await this.reconcileProtocolFill(order);
-            return { ok: true, order: filled, match: null, protocolFill: null, pendingProtocolQuote: null };
-          }
-          // ==============================
-          // DEMO MODE END
-          // ==============================
-
           return {
             ok: true,
             order,
@@ -334,23 +309,6 @@ export class OrderService {
       const reservationState = await this.reservationReader.getReservationState(reservation.quoteId);
       settled = reservationState === 'EXECUTED';
     }
-
-    // ==============================
-    // DEMO MODE START
-    // ==============================
-    // Hackathon demo only (DEMO_PPM_SELL=true): treat a SELL reservation as
-    // settled without waiting for a real on-chain settleWithProtocol
-    // confirmation. Everything below this block — the FILLED CAS, orderbook
-    // removal, markReservationExecuted, and the order.filled broadcast — is
-    // unmodified production code. Disable by unsetting DEMO_PPM_SELL (see
-    // matcher/src/demo/ppmSellDemo.ts); with it unset, `settled` is decided
-    // purely by the real on-chain checks above, exactly like today.
-    if (!settled && order.side === 'SELL' && isDemoPpmSellEnabled()) {
-      settled = true;
-    }
-    // ==============================
-    // DEMO MODE END
-    // ==============================
 
     if (!settled) return order;
 

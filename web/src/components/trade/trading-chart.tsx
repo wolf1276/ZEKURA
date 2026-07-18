@@ -27,10 +27,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { generateCandles, nextTick } from "@/lib/mock/candles";
+import { useCandles } from "@/hooks/use-candles";
 import { formatPrice } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import type { Candle, Timeframe } from "@/lib/types";
+import type { AssetPair, Candle, Timeframe } from "@/lib/types";
 
 const TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1H", "4H", "1D"];
 type ChartStyle = "candles" | "line" | "area";
@@ -54,22 +54,22 @@ const DRAWING_TOOLS = [
 
 interface TradingChartProps {
   pairLabel: string;
-  basePrice: number;
+  pair: AssetPair;
 }
 
-export function TradingChart({ pairLabel, basePrice }: TradingChartProps) {
+export function TradingChart({ pairLabel, pair }: TradingChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick" | "Line" | "Area"> | null>(
     null,
   );
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const candlesRef = useRef<Candle[]>([]);
 
   const [timeframe, setTimeframe] = useState<Timeframe>("5m");
+  const { candles } = useCandles(pair, timeframe);
   const [chartStyle, setChartStyle] = useState<ChartStyle>("candles");
   const [fullscreen, setFullscreen] = useState(false);
-  const [ohlc, setOhlc] = useState<Candle | null>(null);
+  const ohlc: Candle | null = candles.length > 0 ? candles[candles.length - 1]! : null;
 
   // Chart lifecycle: create once, tear down on unmount.
   useEffect(() => {
@@ -123,7 +123,7 @@ export function TradingChart({ pairLabel, basePrice }: TradingChartProps) {
     };
   }, []);
 
-  // Rebuild series when timeframe or chart style changes.
+  // Rebuild series when chart style changes, or real candle data arrives/updates.
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -131,8 +131,11 @@ export function TradingChart({ pairLabel, basePrice }: TradingChartProps) {
     if (seriesRef.current) chart.removeSeries(seriesRef.current);
     if (volumeSeriesRef.current) chart.removeSeries(volumeSeriesRef.current);
 
-    const candles = generateCandles(timeframe, 140, basePrice);
-    candlesRef.current = candles;
+    if (candles.length === 0) {
+      seriesRef.current = null;
+      volumeSeriesRef.current = null;
+      return;
+    }
 
     let series: ISeriesApi<"Candlestick" | "Line" | "Area">;
 
@@ -207,39 +210,7 @@ export function TradingChart({ pairLabel, basePrice }: TradingChartProps) {
     volumeSeriesRef.current = volumeSeries;
 
     chart.timeScale().fitContent();
-    setOhlc(priceLine);
-  }, [timeframe, chartStyle, basePrice]);
-
-  // Simulated live tick stream — swap for the Matcher/oracle WS feed later.
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      const series = seriesRef.current;
-      const candles = candlesRef.current;
-      if (!series || candles.length === 0) return;
-
-      const last = candles[candles.length - 1];
-      const updated = nextTick(last, Date.now());
-      candles[candles.length - 1] = updated;
-
-      if (chartStyle === "candles") {
-        series.update({
-          time: updated.time as UTCTimestamp,
-          open: updated.open,
-          high: updated.high,
-          low: updated.low,
-          close: updated.close,
-        });
-      } else {
-        series.update({
-          time: updated.time as UTCTimestamp,
-          value: updated.close,
-        });
-      }
-      setOhlc(updated);
-    }, 2500);
-
-    return () => window.clearInterval(interval);
-  }, [chartStyle]);
+  }, [timeframe, chartStyle, candles]);
 
   return (
     <motion.div
@@ -342,7 +313,13 @@ export function TradingChart({ pairLabel, basePrice }: TradingChartProps) {
         <div
           ref={containerRef}
           className="relative min-h-[320px] flex-1 overflow-hidden"
-        />
+        >
+          {candles.length === 0 && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
+              No trades yet for {pairLabel} — the chart populates from real settled trades.
+            </div>
+          )}
+        </div>
       </div>
     </motion.div>
   );
