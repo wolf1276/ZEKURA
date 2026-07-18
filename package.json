@@ -17,6 +17,7 @@
     "deploy": "npx tsx src/deploy.ts",
     "deploy:tzkr": "npx tsx src/deploy-tzkr.ts",
     "mint:tzkr": "npx tsx src/mint-tzkr.ts",
+    "fund:treasury": "npx tsx src/fund-treasury.ts",
     "cli": "npx tsx src/cli.ts",
     "check-balance": "npx tsx src/check-balance.ts",
     "network": "npx tsx src/network.ts",

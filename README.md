@@ -859,7 +859,7 @@ contract are in [`matcher/API.md`](./matcher/API.md).
 | Network | Contract Address | Deployed |
 |---|---|---|
 | **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` (post-audit build) | 2026-07-15 |
-| **Preprod** (default network) | `831aa0d2c2b49286f0736bb6f60b0d8b90aa09e043930e5182a129428a456734` (NIGHT-payment-leg + SELL-PPM build, 12 circuits — see below and Deployment.md) | 2026-07-17 |
+| **Preprod** (default network) | `4e13ec7030611cbd35dcda657f75b7d0a2ae00dd7d59c8ab9facd225dd3e08fa` (NIGHT-payment-leg + SELL-PPM + deriveAssetKey fix, 12 circuits — see below and Deployment.md) | 2026-07-18 |
 | **Preprod — tZKR token** | `461009399dcd6e196376c3e8d470f8ba801a1d0d9262ead39a0684f500f85f89` (`contracts/tzkr-token.compact`) | 2026-07-17 |
 | Undeployed (local devnet) | not persistent — redeploy via `npm run setup` | — |
 

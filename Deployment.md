@@ -13,7 +13,7 @@ deployed contract build.
 | Network | Contract Address | Deployer | Deployed | Verified |
 |---|---|---|---|---|
 | **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` | `mn_addr_preview133whwmeuxs6zs5r0n6ad2sse6q076mk8lggq3y7pl8h4vsywp7zqgwjzmf` | 2026-07-15 | ✅ 2026-07-16 (`npm run test:e2e`, re-confirmed in the Level 4 pass below) |
-| **Preprod (exchange)** | `831aa0d2c2b49286f0736bb6f60b0d8b90aa09e043930e5182a129428a456734` | `mn_addr_preprod1420rzrglra4qm3l26suvxx8z0wtkc6tf8wn77zggzjd4geajtg2q6ag3cz` | 2026-07-17 | ⚠️ Deployed and typecheck/lint/test-suite verified (see "NIGHT payment leg + SELL PPM + circuit trim" below); no live on-chain trade round trip run yet against this address — Matcher was not started against it this session |
+| **Preprod (exchange)** | `4e13ec7030611cbd35dcda657f75b7d0a2ae00dd7d59c8ab9facd225dd3e08fa` | `mn_addr_preprod1420rzrglra4qm3l26suvxx8z0wtkc6tf8wn77zggzjd4geajtg2q6ag3cz` | 2026-07-18 | ✅ Deployed, Treasury funded (500,000,000 base units NIGHT), and a full live SELL PPM fill round trip verified on-chain — see "deriveAssetKey fix + PPM SELL demo verification" below. Supersedes the 2026-07-17 address (`831aa0d2...`), which is now stale — its Treasury could never be funded, see that entry's own note. |
 | **Preprod (tZKR token)** | `461009399dcd6e196376c3e8d470f8ba801a1d0d9262ead39a0684f500f85f89` | same deployer as above | 2026-07-17 | ✅ Deployed and minted (1,000,000 tZKR, tx `007317845f34574bcacdc849503909bc25f8c75f0794d1335cf68d258ab5be7f66`); **not yet wired as the tradable asset** in matcher/web config — see Known Limitations |
 | Undeployed (local devnet) | not persistent — redeploy via `npm run setup` | genesis seed | — | n/a |
 
@@ -25,6 +25,86 @@ exchange address above; `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREVIEW` is
 left blank (unchanged — no Preview redeploy happened this pass).
 
 ---
+
+## Preprod redeploy — 2026-07-18: deriveAssetKey fix + PPM SELL demo verification
+
+Starting the Matcher with `DEMO_PPM_SELL=true` (see `matcher/src/demo/ppmSellDemo.ts`)
+against the 2026-07-17 exchange address to run a real SELL PPM fill surfaced
+a genuine contract bug, not a demo-flag issue: `deriveAssetKey` unconditionally
+hashed the asset id (`persistentHash(asset)`), but `depositTreasury`/
+`receiveUnshielded` use that same value as the literal on-chain token type.
+A hash of a token id is never itself a real, holdable token, so **no asset's
+Treasury bucket could ever be funded, for any pair, by anyone** — confirmed
+by querying `treasuryBalances` for the live tNIGHT/tZKR pair key: `0`, with
+`depositTreasury` structurally unable to change that. This blocked PPM/
+Treasury entirely, not just the SELL demo bypass.
+
+Fix (`contracts/exchange.compact`'s `deriveAssetKey`): for `is_left: false`
+(unshielded) assets, return the raw token type unchanged instead of hashing
+it — `receiveUnshielded`/`sendUnshielded` then move exactly the token the
+Treasury bucket is keyed under. `is_left: true` (shielded/opaque) assets
+still domain-hash, since they were never real tokens to begin with. All 61
+contract tests pass unchanged (they already exercised `is_left: false` with
+a real-looking `right` value, i.e. this fix restores what the tests assumed).
+
+**tZKR still can't use this path.** `contracts/tzkr-token.compact` is a fully
+custom OpenZeppelin `FungibleToken` contract with its own internal balance
+ledger — not a native unshielded token — so `receiveUnshielded` can never
+move it regardless of the hash fix. Wiring tZKR in for real needs
+`exchange.compact` to make cross-contract calls into tZKR's own
+`transfer`/`transferFrom`, which is materially more work than this fix (see
+`web/src/lib/mock/market.ts`'s `PPM_ASSET_ADAPTER` doc comment for the exact
+migration steps).
+
+**web adapter, not tZKR.** `web/src/lib/types.ts` gained `AssetPair.assetIsLeft`
+so a pair can declare which `Either` shape it uses; the default demo pair
+(`web/src/lib/mock/market.ts`'s `PPM_ASSET_ADAPTER`) was swapped from the
+tNIGHT/tZKR placeholder to a `NIGHT`-backed synthetic pair (`assetIsLeft:
+false`, both legs the all-zero NIGHT token type) — genuinely fundable and
+tradable today. Every consumer reads `ASSET_PAIRS`/`DEFAULT_PAIR`, so
+swapping in real tZKR later (once the cross-contract work above lands) is a
+one-line change to that adapter, not a pipeline rewrite.
+
+**Redeploy + funding + verification, all real transactions:**
+1. Recompiled (still 12 circuits) and redeployed to Preprod:
+   `4e13ec7030611cbd35dcda657f75b7d0a2ae00dd7d59c8ab9facd225dd3e08fa`.
+2. `npm run fund:treasury -- --network preprod --amount 500000000` (new
+   script, `src/fund-treasury.ts`) — a real `depositTreasury` transaction
+   funding the NIGHT-keyed bucket with 500,000,000 base units, confirmed by
+   an on-chain balance read-back immediately after.
+3. Started the Matcher (`DEMO_PPM_SELL=true`) against the new address —
+   synced, connected, listening.
+4. `matcher/scripts/ppm-sell-demo-run.ts` (new, one-off verification script):
+   seeded a real user/user BUY@1000/SELL@1000 match (real `settle()` on-chain,
+   needed only so `PricingEngine` has a reference price) via real
+   `createOrder` transactions, then submitted a SELL@900 order that the PPM
+   quoted at ~995 and filled.
+5. **Verified for real, end to end:** `reserveLiquidity` executed on-chain
+   (real tx id in `/treasury/history`'s RESERVE event); the `DEMO_PPM_SELL`
+   bypass activated and the same HTTP response already showed
+   `status: "FILLED"`; `/orders/:id` confirms `FILLED`; `/treasury/history`
+   shows the RESERVE and EXECUTE events; `/treasury/balance` shows
+   `reserved: 50` correctly held against the fill. Web app (`npm run dev`)
+   confirmed serving the same data through its `/api/matcher/*` proxy routes.
+
+**Known accounting quirk of the demo bypass (expected, not a bug):** because
+`DEMO_PPM_SELL` reconciles the fill locally without ever calling the real
+`settleWithProtocol`, the on-chain `treasuryReserved` for a demo-filled SELL
+is never decremented — it stays reserved forever, permanently taking that
+liquidity out of circulation for this Treasury bucket. This is the exact
+tradeoff `ppmSellDemo.ts`'s doc comment already describes ("skips that wait
+... treated as settled immediately"); disabling `DEMO_PPM_SELL` restores the
+real on-chain release/execute accounting.
+
+**Not verified this pass (needs a browser, not curl):** the Activity/
+Portfolio/Dashboard pages' live rendering, absence of duplicate WebSocket
+events in the browser console, and state survival across a page refresh.
+The underlying API routes were confirmed to serve the correct real data
+(`/api/matcher/treasury/history`, `/api/matcher/trades`, etc.), and the
+broadcast code path was confirmed by inspection to fire `order.filled`
+exactly once per fill (idempotent CAS makes any later periodic-sweep
+reconciliation a no-op) — but no browser automation was available to drive
+this checklist item for real.
 
 ## Preprod redeploy — 2026-07-17/18: NIGHT payment leg + SELL PPM + tZKR + circuit trim
 
