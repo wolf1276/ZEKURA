@@ -15,10 +15,13 @@
  * over HTTP instead of from the local filesystem.
  *
  * `createOrder(orderId, commitment)` never touches the
- * orderDetails/orderBlinding/ownerSecretKey witnesses (confirmed by reading
- * contracts/exchange.compact and the witness stubs already used the same
- * way in src/cli.ts/src/deploy.ts) — this client only ever needs to prove
- * that one circuit.
+ * orderDetails/orderBlinding/ownerSecretKey witnesses. `cancelOrder` and
+ * `settleWithProtocol` do — both re-derive and verify the order's on-chain
+ * commitment, so they need this profile's real persisted secret and the
+ * order's real private details/blinding (see services/midnight/orderStore.ts
+ * and ownerSecret.ts). `adminSecretKey` genuinely is never needed here —
+ * Treasury admin actions are submitted by the Matcher, never the browser
+ * (see matcher/src/api/admin.ts).
  */
 import { CompiledContract } from "@midnight-ntwrk/compact-js";
 import type { ConnectedAPI, Configuration } from "@midnight-ntwrk/dapp-connector-api";
@@ -34,6 +37,8 @@ import type {
 import { createProofProvider } from "@midnight-ntwrk/midnight-js-types";
 import { fromHex, toHex } from "@midnight-ntwrk/midnight-js-utils";
 import { Transaction } from "@midnight-ntwrk/ledger-v8";
+import { getOrCreateOwnerSecret } from "@/services/midnight/ownerSecret";
+import { getOrderWitnessData } from "@/services/midnight/orderStore";
 
 // Relative import into the already-compiled, already-committed contract
 // output — the single source of truth also used by src/cli.ts,
@@ -51,28 +56,35 @@ import type {
 // with the identical CompiledContract setup in src/cli.ts / src/deploy.ts.
 const EXCHANGE_ASSETS_PATH = "contracts/managed/exchange";
 
-// createOrder(orderId, commitment) never calls any witness — see the file
-// header. These stubs mirror the exact ones already used in
-// src/cli.ts/src/deploy.ts for the same reason.
+// orderDetails/orderBlinding read this profile's real locally-persisted
+// record of the order being acted on (see services/midnight/orderStore.ts);
+// createOrder never calls either, so they only ever fire for cancelOrder/
+// settleWithProtocol. ownerSecretKey returns this profile's real persisted
+// secret (services/midnight/ownerSecret.ts) — the same one every order this
+// profile creates already embeds via deriveOwnerId, so it always matches.
 const exchangeWitnesses: ExchangeWitnesses<undefined> = {
-  orderDetails: () => {
-    throw new Error(
-      "orderDetails witness not implemented in the browser client — createOrder never invokes it (see contracts/exchange.compact).",
-    );
+  orderDetails: (context, orderId) => {
+    const entry = getOrderWitnessData(orderId);
+    if (!entry) {
+      throw new Error(
+        "No locally-stored order details for this orderId — this browser profile did not create this order, or its local record was cleared.",
+      );
+    }
+    return [context.privateState, entry.details];
   },
-  orderBlinding: () => {
-    throw new Error(
-      "orderBlinding witness not implemented in the browser client — createOrder never invokes it.",
-    );
+  orderBlinding: (context, orderId) => {
+    const entry = getOrderWitnessData(orderId);
+    if (!entry) {
+      throw new Error(
+        "No locally-stored order details for this orderId — this browser profile did not create this order, or its local record was cleared.",
+      );
+    }
+    return [context.privateState, entry.blinding];
   },
-  ownerSecretKey: () => {
-    throw new Error(
-      "ownerSecretKey witness not implemented in the browser client — createOrder never invokes it.",
-    );
-  },
+  ownerSecretKey: (context) => [context.privateState, getOrCreateOwnerSecret()],
   adminSecretKey: () => {
     throw new Error(
-      "adminSecretKey witness not implemented in the browser client — createOrder never invokes it (Treasury admin actions are submitted by the Matcher, never the browser — see matcher/src/api/admin.ts).",
+      "adminSecretKey witness not implemented in the browser client — Treasury admin actions are submitted by the Matcher, never the browser (see matcher/src/api/admin.ts).",
     );
   },
 };
@@ -230,5 +242,79 @@ export async function submitCreateOrder(params: {
   });
 
   const result = await deployed.callTx.createOrder(params.orderId, params.commitment);
+  return { txId: result.public.txId };
+}
+
+/**
+ * Submits `cancelOrder(orderId)` on-chain through the connected wallet — the
+ * real on-chain half of cancelling an order (the Matcher's own DELETE
+ * /orders/:id only ever updates its local off-chain view, see
+ * matcher/API.md and app/api/matcher/orders/[id]/route.ts; without this
+ * call the order's on-chain commitment stays OPEN forever). Requires this
+ * profile to hold the order's real ownerSecretKey (see exchangeWitnesses
+ * above) — the contract rejects anyone else's, per AUDIT.md's P0 fix.
+ */
+export async function submitCancelOrder(params: {
+  connectedApi: ConnectedAPI;
+  configuration: Configuration;
+  shielded: ConnectedWalletShieldedKeys;
+  proofServerUri: string;
+  contractAddress: string;
+  orderId: Uint8Array;
+}): Promise<{ txId: string }> {
+  const providers = await buildContractProviders(
+    params.connectedApi,
+    params.configuration,
+    params.shielded,
+    params.proofServerUri,
+  );
+
+  const deployed = await findDeployedContract(providers, {
+    compiledContract: compiledExchangeContract,
+    contractAddress: params.contractAddress,
+  });
+
+  const result = await deployed.callTx.cancelOrder(params.orderId);
+  return { txId: result.public.txId };
+}
+
+/**
+ * Submits `settleWithProtocol(orderId, quoteId, recipient)` on-chain through
+ * the connected wallet — the "Approve Settlement" step a PPM fill requires
+ * from the order's own owner (see contracts/exchange.compact's doc comment
+ * on the NIGHT payment leg: receiveUnshielded always draws from whoever
+ * submits, so the owner's own wallet must submit this, for both BUY and
+ * SELL). `recipientAddressBytes` is this wallet's own real unshielded
+ * address — the traded asset (BUY) or NIGHT payment (SELL) pays out there.
+ */
+export async function submitSettleWithProtocol(params: {
+  connectedApi: ConnectedAPI;
+  configuration: Configuration;
+  shielded: ConnectedWalletShieldedKeys;
+  proofServerUri: string;
+  contractAddress: string;
+  orderId: Uint8Array;
+  quoteId: Uint8Array;
+  recipientAddressBytes: Uint8Array;
+}): Promise<{ txId: string }> {
+  const providers = await buildContractProviders(
+    params.connectedApi,
+    params.configuration,
+    params.shielded,
+    params.proofServerUri,
+  );
+
+  const deployed = await findDeployedContract(providers, {
+    compiledContract: compiledExchangeContract,
+    contractAddress: params.contractAddress,
+  });
+
+  const recipient = {
+    is_left: false,
+    left: { bytes: new Uint8Array(32) },
+    right: { bytes: params.recipientAddressBytes },
+  };
+
+  const result = await deployed.callTx.settleWithProtocol(params.orderId, params.quoteId, recipient);
   return { txId: result.public.txId };
 }

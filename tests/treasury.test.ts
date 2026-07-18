@@ -157,6 +157,7 @@ function readOrder(l: any, orderId: Uint8Array): any {
 const CALLER_PK_HEX = '00'.repeat(32);
 const ADMIN_SECRET_HEX = 'aa'.repeat(32);
 const OTHER_SECRET_HEX = 'bb'.repeat(32);
+const OWNER_SECRET_HEX = 'cc'.repeat(32);
 
 const ASSET_A = bytes32(0xa1); // stands in for a token type (e.g. tNIGHT's real nativeToken() bytes on a live network)
 const ASSET_B = bytes32(0xb2);
@@ -176,9 +177,13 @@ const CONTRACT_RECIPIENT = {
 async function main() {
   const mod: any = await import(pathToFileURL(contractPath).href);
   const { Contract, ledger, OrderState, ReservationState, TxKind, pureCircuits } = mod;
-  const { deriveAdminId, deriveAssetKey } = pureCircuits;
+  const { deriveAdminId, deriveAssetKey, deriveOwnerId } = pureCircuits;
 
   const ADMIN_ID = deriveAdminId(Buffer.from(ADMIN_SECRET_HEX, 'hex'));
+  // The default sample order's owner — real settleWithProtocol callers must
+  // now prove they hold this secret (see contracts/exchange.compact's P0-2
+  // fix), same requirement cancelOrder already had.
+  const OWNER_ID = deriveOwnerId(Buffer.from(OWNER_SECRET_HEX, 'hex'));
 
   function sampleOrder(overrides: Partial<OrderDetailsValue> = {}): OrderDetailsValue {
     return {
@@ -186,7 +191,7 @@ async function main() {
       isBuy: true,
       price: 1_000n,
       amount: 500n,
-      owner: { bytes: bytes32(0x77) },
+      owner: { bytes: OWNER_ID },
       expiresAt: 9_999_999_999n,
       ...overrides,
     };
@@ -197,7 +202,7 @@ async function main() {
   // admin. adminSecretKeyHex controls which secret the *caller's* witness
   // reports — defaults to the real admin so most tests exercise the
   // authorized path; override to simulate a non-admin caller.
-  function makeContract(adminSecretKeyHex: string = ADMIN_SECRET_HEX) {
+  function makeContract(adminSecretKeyHex: string = ADMIN_SECRET_HEX, ownerSecretKeyHex: string = OWNER_SECRET_HEX) {
     // Local, in-memory order store standing in for a wallet's private
     // storage — same role as tests/exchange.test.ts's orderStore, needed
     // here only so settleWithProtocol tests can create a real order with a
@@ -216,9 +221,7 @@ async function main() {
         if (!entry) throw new Error(`no witness data registered for order ${key}`);
         return [context.privateState, entry.blinding];
       },
-      ownerSecretKey: () => {
-        throw new Error('ownerSecretKey witness not needed by treasury tests');
-      },
+      ownerSecretKey: (context: any) => [context.privateState, Buffer.from(ownerSecretKeyHex, 'hex')],
       adminSecretKey: (context: any) => [context.privateState, Buffer.from(adminSecretKeyHex, 'hex')],
     };
     const contract = new Contract(witnesses);
@@ -614,6 +617,26 @@ async function main() {
       'Order is not open',
       'replayed settleWithProtocol',
     );
+  });
+
+  test('settleWithProtocol: rejects a caller who knows the order details but not its ownerSecretKey — closes the payout-redirect bypass', () => {
+    // Simulates the Matcher (or any party disclosed the order's committed
+    // details for settlement, per this contract's own trust model): it can
+    // satisfy verifyOrderCommitment, but does not hold the real owner's
+    // ownerSecretKey, so it must not be able to submit settleWithProtocol
+    // and redirect the payout to a recipient of its own choosing.
+    const c = makeContract(ADMIN_SECRET_HEX, OTHER_SECRET_HEX);
+    const quoteId = bytes32(0xa8);
+    const { orderId } = makeOpenOrderAgainstReservation({ c, quoteId, treasuryDeposit: 10_000n });
+    assertThrows(
+      () => c.settleWithProtocol(orderId, quoteId, CONTRACT_RECIPIENT),
+      'Caller is not the order owner',
+      'eavesdropper without ownerSecretKey',
+    );
+    // Nothing moved: the order is still open and the reservation still OPEN.
+    assertEq(c.getOrder(orderId).state, OrderState.OPEN, 'order stays OPEN when auth fails');
+    assertEq(readReservation(c.ledger(), quoteId).state, ReservationState.OPEN, 'reservation stays OPEN when auth fails');
+    assertEq(readBalance(c.ledger(), ASSET_A_KEY), 10_000n, 'treasury asset balance untouched');
   });
 
   test('settleWithProtocol: rejects an asset mismatch between the order and the reservation', () => {

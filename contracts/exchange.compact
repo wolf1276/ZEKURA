@@ -543,6 +543,24 @@ export circuit settleWithProtocol(
   const details = verifyOrderCommitment(oid, record.commitment);
   assert(!blockTimeGte(disclose(details.expiresAt)), "Order has expired");
 
+  // Same owner-authorization check as cancelOrder, for the same reason
+  // (AUDIT.md P0-1): verifyOrderCommitment only proves the caller knows the
+  // order's committed details/blinding — the Matcher is legitimately
+  // disclosed exactly that for every order it settles, so knowledge of the
+  // commitment alone is NOT sufficient authorization here. Unlike
+  // cancelOrder, this circuit also moves real funds (`recipient` decides
+  // where the traded asset or NIGHT payment lands) and takes `recipient` as
+  // a free-form caller-supplied argument with no other on-chain binding to
+  // the order's owner — without this check, anyone disclosed the order's
+  // details could front-run the real owner's own settleWithProtocol call,
+  // pay for it out of their own wallet, and redirect the payout to
+  // themselves, consuming the order (marking it FILLED) while the real
+  // owner receives nothing.
+  assert(
+    details.owner.bytes == deriveOwnerId(ownerSecretKey()),
+    "Caller is not the order owner"
+  );
+
   assert(deriveAssetKey(details.asset) == r.assetKey, "Asset mismatch between order and reservation");
   assert(disclose(details.amount) == r.amount, "Amount mismatch between order and reservation");
 

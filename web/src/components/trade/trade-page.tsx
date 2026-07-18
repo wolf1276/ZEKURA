@@ -14,6 +14,7 @@ import { PrivacyProofPanel } from "@/components/trade/privacy-proof-panel";
 import { DEFAULT_PAIR } from "@/lib/mock/market";
 import { deriveMarketInsights } from "@/lib/marketInsights";
 import { useMarketData } from "@/hooks/use-market-data";
+import { useOrderActions } from "@/hooks/use-order-actions";
 import { matcher } from "@/services/matcher/matcherClient";
 import type { AssetPair, MarketInsights, Order } from "@/lib/types";
 
@@ -45,6 +46,7 @@ export function TradePage() {
   const [trackedOrderId, setTrackedOrderId] = useState<string | null>(null);
   const [matchedWith, setMatchedWith] = useState<Record<string, "user" | "protocol">>({});
   const marketData = useMarketData(pair);
+  const { cancelOrder } = useOrderActions();
 
   useEffect(() => matcher.subscribe(setOrders), []);
 
@@ -89,9 +91,13 @@ export function TradePage() {
     setTrackedOrderId(order.id);
   }, []);
 
-  const handleCancel = useCallback((id: string) => {
-    void matcher.cancelOrder(id);
-  }, []);
+  const handleCancel = useCallback(
+    (id: string) => {
+      // Real on-chain cancelOrder — see hooks/use-order-actions.ts.
+      void cancelOrder(id);
+    },
+    [cancelOrder],
+  );
 
   return (
     <div className="flex min-h-screen flex-col bg-background">

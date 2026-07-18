@@ -70,10 +70,19 @@ export interface MatcherProtocolFill {
   txId: string;
 }
 
+/** PPM reserved liquidity but did not settle — the order stays OPEN until this order's own owner submits settleWithProtocol (see hooks/use-order-actions.ts). */
+export interface MatcherPendingQuote {
+  quoteId: string;
+  price: string;
+  amount: string;
+  expiresAt: string;
+}
+
 export interface CreateOrderResponse {
   order: MatcherOrder;
   match: MatcherMatch | null;
   protocolFill: MatcherProtocolFill | null;
+  pendingProtocolQuote: MatcherPendingQuote | null;
 }
 
 export type MatcherErrorCode =

@@ -7,6 +7,7 @@ import { PageShell, Card } from "@/components/layout/page-shell";
 import { OrderStatusBadge } from "@/components/trade/order-status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useWallet } from "@/wallet/walletHooks";
+import { useOrderActions } from "@/hooks/use-order-actions";
 import { matcher } from "@/services/matcher/matcherClient";
 import {
   formatAmount,
@@ -48,6 +49,7 @@ function toCsv(orders: Order[]): string {
 
 export function OrdersPage() {
   const { balanceFor } = useWallet();
+  const { cancelOrder } = useOrderActions();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState(0);
@@ -63,13 +65,18 @@ export function OrdersPage() {
     [],
   );
 
-  const handleCancel = useCallback((id: string) => {
-    matcher.cancelOrder(id).catch((err: unknown) => {
-      toast.error("Couldn't cancel order", {
-        description: err instanceof Error ? err.message : "Unknown error — try again.",
+  const handleCancel = useCallback(
+    (id: string) => {
+      // Real on-chain cancelOrder — not just the Matcher's off-chain view
+      // (see hooks/use-order-actions.ts for why both matter).
+      cancelOrder(id).catch((err: unknown) => {
+        toast.error("Couldn't cancel order", {
+          description: err instanceof Error ? err.message : "Unknown error — try again.",
+        });
       });
-    });
-  }, []);
+    },
+    [cancelOrder],
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

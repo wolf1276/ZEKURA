@@ -7,6 +7,7 @@ import { useNetworkContext } from "@/network/networkContext";
 import { computeCommitment, type OrderDetailsValue } from "@/services/midnight/commitment";
 import { pureCircuits, submitCreateOrder } from "@/services/midnight/exchangeContract";
 import { getOrCreateOwnerSecret } from "@/services/midnight/ownerSecret";
+import { saveOrderWitnessData } from "@/services/midnight/orderStore";
 import { toWalletError } from "@/wallet/walletConnector";
 import { MatcherApiError, submitOrder } from "@/services/matcher/api";
 import { expiryToUnixSeconds } from "@/lib/order-status";
@@ -142,6 +143,11 @@ export function useSubmitOrder() {
           signature: toHex(blinding),
           expiresAt: expiresAt.toString(),
         });
+
+        // Persist now that the order is confirmed live — cancelOrder and
+        // settleWithProtocol both need to reconstruct these exact witnesses
+        // later (see services/midnight/orderStore.ts).
+        saveOrderWitnessData(orderId, details, blinding);
 
         const uiOrder: Order = {
           id: order.id,
