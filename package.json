@@ -21,6 +21,7 @@
     "check-balance": "npx tsx src/check-balance.ts",
     "network": "npx tsx src/network.ts",
     "deploy:retry": "npx tsx scripts/sync-retry.ts npx tsx src/deploy.ts",
+    "seed:treasury": "npx tsx scripts/seed-treasury.ts",
     "proof-server:start": "docker compose up -d",
     "proof-server:stop": "docker compose down",
     "clean": "rm -rf contracts/managed .midnight-state.json .midnight-wallet-state",
