@@ -11,7 +11,7 @@ import type { MatcherTrade } from "@/types/matcher";
 // shared trade tape keeps for the Activity/Recent-Trades panels — this hook
 // fetches its own copy at a higher limit rather than raising that shared
 // cap for every other consumer.
-const CHART_TRADE_HISTORY_LIMIT = 1000;
+const CHART_TRADE_HISTORY_LIMIT = 500;
 
 interface CandleState {
   trades: MatcherTrade[];
