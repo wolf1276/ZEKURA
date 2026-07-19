@@ -11,9 +11,12 @@
  * connections aren't subject to the CORS restriction that requires proxying
  * the REST calls).
  */
+import { fromHex } from "@midnight-ntwrk/midnight-js-utils";
 import { ASSET_PAIRS } from "@/lib/mock/market";
 import type { ActivityEvent, ActivityKind, Order, OrderStatus } from "@/lib/types";
 import type { MatcherAsset, MatcherOrder, MatcherTreasuryEvent, MatcherWsMessage } from "@/types/matcher";
+import { getOrderWitnessData } from "@/services/midnight/orderStore";
+import { savePendingSettlement } from "@/services/midnight/pendingSettlements";
 import * as api from "./api";
 import { MatcherApiError } from "./api";
 
@@ -228,6 +231,17 @@ class MatcherClient {
         this.markStatus(message.payload.match.buyOrderId, "FAILED");
         this.markStatus(message.payload.match.sellOrderId, "FAILED");
         break;
+      case "order.ppm_quote_ready": {
+        // Only surface the "Approve Settlement" step for orders this profile
+        // actually owns (holds the real committed details/blinding for) —
+        // e.g. another wallet's order that happened to get PPM-filled is not
+        // something this session can or should act on.
+        const { orderId, quoteId, side, price, amount, expiresAt } = message.payload;
+        if (getOrderWitnessData(fromHex(orderId))) {
+          savePendingSettlement({ orderId, quoteId, side, price, amount, expiresAt });
+        }
+        break;
+      }
     }
 
     this.emitActivityForMessage(message, WS_KIND_TO_ACTIVITY[message.type]);

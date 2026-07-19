@@ -8,6 +8,7 @@ import { computeCommitment, type OrderDetailsValue } from "@/services/midnight/c
 import { pureCircuits, submitCreateOrder } from "@/services/midnight/exchangeContract";
 import { getOrCreateOwnerSecret } from "@/services/midnight/ownerSecret";
 import { saveOrderWitnessData } from "@/services/midnight/orderStore";
+import { savePendingSettlement } from "@/services/midnight/pendingSettlements";
 import { toWalletError } from "@/wallet/walletConnector";
 import { MatcherApiError, submitOrder } from "@/services/matcher/api";
 import { expiryToUnixSeconds } from "@/lib/order-status";
@@ -134,7 +135,7 @@ export function useSubmitOrder() {
 
         setState({ phase: "disclosing" });
 
-        const { order } = await submitOrder({
+        const { order, pendingProtocolQuote } = await submitOrder({
           id: toHex(orderId),
           asset: input.pair.quoteAssetId,
           side: input.side,
@@ -150,6 +151,21 @@ export function useSubmitOrder() {
         // settleWithProtocol both need to reconstruct these exact witnesses
         // later (see services/midnight/orderStore.ts).
         saveOrderWitnessData(orderId, details, blinding);
+
+        // PPM reserved liquidity against this order but did not settle it —
+        // the "Approve Settlement" step now needs this wallet's own
+        // settleWithProtocol call (see hooks/use-order-actions.ts and
+        // services/midnight/pendingSettlements.ts).
+        if (pendingProtocolQuote) {
+          savePendingSettlement({
+            orderId: order.id,
+            quoteId: pendingProtocolQuote.quoteId,
+            side: input.side,
+            price: pendingProtocolQuote.price,
+            amount: pendingProtocolQuote.amount,
+            expiresAt: pendingProtocolQuote.expiresAt,
+          });
+        }
 
         const uiOrder: Order = {
           id: order.id,

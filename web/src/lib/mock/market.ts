@@ -28,7 +28,7 @@ import type { AssetPair, MarketInsights } from "@/lib/types";
 
 /** tZKR's real minted unshielded token color on Preprod (see .midnight-tzkr.json / src/mint-tzkr.ts). */
 export const TZKR_ASSET_ID =
-  "b16fbbec8ed99e38b16aa56166a646a1c71fd4a8e902fd0e357825d9a59efea4";
+  "5698abe70f5108b2b7607846049c4bf9890f50868686823b3fc8342f230a2760";
 
 /** NIGHT's own all-zero unshielded token color (nativeToken()) — a stable display/lookup id, never itself written into OrderDetails.asset. */
 export const TNIGHT_ASSET_ID = "c3".padEnd(64, "0");

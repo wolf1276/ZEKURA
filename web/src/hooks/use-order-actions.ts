@@ -2,10 +2,14 @@
 
 import { useCallback } from "react";
 import { fromHex } from "@midnight-ntwrk/midnight-js-utils";
+import { encodeUserAddress } from "@midnight-ntwrk/ledger-v8";
+import { getNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
+import { MidnightBech32m, UnshieldedAddress } from "@midnight-ntwrk/wallet-sdk-address-format";
 import { useWalletContext } from "@/wallet/walletContext";
 import { useNetworkContext } from "@/network/networkContext";
-import { submitCancelOrder } from "@/services/midnight/exchangeContract";
+import { submitCancelOrder, submitSettleWithProtocol } from "@/services/midnight/exchangeContract";
 import { forgetOrderWitnessData } from "@/services/midnight/orderStore";
+import { forgetPendingSettlement } from "@/services/midnight/pendingSettlements";
 import { toWalletError } from "@/wallet/walletConnector";
 import { cancelOrder as cancelOrderOffChain } from "@/services/matcher/api";
 import { WalletError } from "@/wallet/walletTypes";
@@ -77,5 +81,66 @@ export function useOrderActions() {
     [status, wallet, getConnectedApi, network, networkSwitching],
   );
 
-  return { cancelOrder };
+  /**
+   * Submits `settleWithProtocol(orderId, quoteId, recipient)` — the "Approve
+   * Settlement" step a PPM fill requires from the order's own owner (see
+   * contracts/exchange.compact's doc comment: receiveUnshielded always draws
+   * from whoever submits, so the Matcher can no longer auto-execute this the
+   * way it once did for BUY). `recipient` is always this wallet's own real
+   * unshielded address — the traded asset (BUY) or NIGHT payment (SELL) pays
+   * out there.
+   */
+  const settleWithProtocol = useCallback(
+    async (orderId: string, quoteId: string): Promise<{ txId: string }> => {
+      if (networkSwitching) {
+        throw new Error("Network switch in progress — try again in a moment.");
+      }
+      const contractAddress = network.contractAddress;
+      if (!contractAddress) {
+        throw new Error(`Zekura's exchange contract isn't deployed on ${network.label} yet.`);
+      }
+      if (status !== "connected" || !wallet) {
+        throw new WalletError("disconnected", "Connect your wallet before approving settlement.");
+      }
+      const connectedApi = getConnectedApi();
+      if (!connectedApi) {
+        throw new WalletError("disconnected", "Wallet connection was lost. Reconnect and try again.");
+      }
+
+      // encodeUserAddress expects the hex UserAddress form, not the bech32m
+      // string wallet.unshieldedAddress is — same conversion
+      // components/treasury/treasury-page.tsx's withdraw form uses.
+      const ownAddressHex = MidnightBech32m.parse(wallet.unshieldedAddress)
+        .decode(UnshieldedAddress, getNetworkId())
+        .hexString;
+      const recipientAddressBytes = encodeUserAddress(ownAddressHex);
+
+      try {
+        const result = await submitSettleWithProtocol({
+          connectedApi,
+          configuration: wallet.configuration,
+          shielded: {
+            shieldedCoinPublicKey: wallet.shieldedCoinPublicKey,
+            shieldedEncryptionPublicKey: wallet.shieldedEncryptionPublicKey,
+          },
+          proofServerUri: network.proofServerUri,
+          contractAddress,
+          orderId: fromHex(orderId),
+          quoteId: fromHex(quoteId),
+          recipientAddressBytes,
+        });
+
+        // Real on-chain settlement succeeded — this quote is done, whether
+        // or not the Matcher's own lazy reconciliation has caught up yet.
+        forgetPendingSettlement(orderId);
+
+        return result;
+      } catch (err) {
+        throw toWalletError(err);
+      }
+    },
+    [status, wallet, getConnectedApi, network, networkSwitching],
+  );
+
+  return { cancelOrder, settleWithProtocol };
 }

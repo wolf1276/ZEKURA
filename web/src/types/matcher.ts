@@ -159,6 +159,25 @@ export type MatcherOrderFilledPayload =
       txId: string;
     };
 
+/**
+ * The PPM reserved liquidity against a resting order but did NOT settle —
+ * the order stays OPEN until its own owner's wallet submits
+ * settleWithProtocol (the "Approve Settlement" step; see
+ * hooks/use-order-actions.ts). Broadcast so any session that owns the order
+ * (a second tab, or this same session if the order rested before getting
+ * PPM-filled) can surface the approval prompt — the submitting session also
+ * gets this synchronously via CreateOrderResponse.pendingProtocolQuote.
+ */
+export interface MatcherPpmQuoteReadyPayload {
+  orderId: string;
+  quoteId: string;
+  assetKey: string;
+  side: MatcherOrderSide;
+  amount: string;
+  price: string;
+  expiresAt: string;
+}
+
 export type MatcherWsMessage =
   | { type: "order.created"; payload: MatcherOrder; timestamp: number }
   | { type: "order.matched"; payload: MatcherMatch; timestamp: number }
@@ -171,6 +190,7 @@ export type MatcherWsMessage =
     }
   | { type: "order.cancelled"; payload: MatcherOrder; timestamp: number }
   | { type: "order.expired"; payload: MatcherOrder; timestamp: number }
+  | { type: "order.ppm_quote_ready"; payload: MatcherPpmQuoteReadyPayload; timestamp: number }
   | { type: "treasury.deposited"; payload: { assetKey: string; amount: string; txId: string }; timestamp: number }
   | { type: "treasury.withdrawn"; payload: { assetKey: string; amount: string; txId: string }; timestamp: number }
   | {

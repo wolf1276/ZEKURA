@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Download, Search, X } from "lucide-react";
+import { Download, Search, X, Check } from "lucide-react";
 import { toast } from "sonner";
 import { PageShell, Card } from "@/components/layout/page-shell";
 import { OrderStatusBadge } from "@/components/trade/order-status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useWallet } from "@/wallet/walletHooks";
 import { useOrderActions } from "@/hooks/use-order-actions";
+import { usePendingSettlements } from "@/hooks/use-pending-settlements";
 import { matcher } from "@/services/matcher/matcherClient";
 import {
   formatAmount,
@@ -49,12 +50,14 @@ function toCsv(orders: Order[]): string {
 
 export function OrdersPage() {
   const { balanceFor } = useWallet();
-  const { cancelOrder } = useOrderActions();
+  const { cancelOrder, settleWithProtocol } = useOrderActions();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState(0);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
+  const pendingSettlements = usePendingSettlements();
+  const [approving, setApproving] = useState<string | null>(null);
 
   useEffect(
     () =>
@@ -63,6 +66,11 @@ export function OrdersPage() {
         setLoading(!matcher.isReady());
       }),
     [],
+  );
+
+  const pendingByOrderId = useMemo(
+    () => new Map(pendingSettlements.map((p) => [p.orderId, p])),
+    [pendingSettlements],
   );
 
   const handleCancel = useCallback(
@@ -76,6 +84,25 @@ export function OrdersPage() {
       });
     },
     [cancelOrder],
+  );
+
+  const handleApproveSettlement = useCallback(
+    (orderId: string, quoteId: string) => {
+      setApproving(orderId);
+      settleWithProtocol(orderId, quoteId)
+        .then(() => {
+          toast.success("Settlement approved", {
+            description: "Your on-chain settleWithProtocol transaction was submitted.",
+          });
+        })
+        .catch((err: unknown) => {
+          toast.error("Couldn't approve settlement", {
+            description: err instanceof Error ? err.message : "Unknown error — try again.",
+          });
+        })
+        .finally(() => setApproving((current) => (current === orderId ? null : current)));
+    },
+    [settleWithProtocol],
   );
 
   const filtered = useMemo(() => {
@@ -244,15 +271,31 @@ export function OrdersPage() {
                           {formatRelativeTime(o.createdAt)}
                         </td>
                         <td className="px-3 py-3 text-right">
-                          {o.status === "OPEN" && (
-                            <button
-                              onClick={() => handleCancel(o.id)}
-                              aria-label="Cancel order"
-                              className="rounded p-1 text-muted-foreground transition-colors hover:bg-white/[0.05] hover:text-foreground"
-                            >
-                              <X className="size-4" />
-                            </button>
-                          )}
+                          <div className="flex items-center justify-end gap-1.5">
+                            {o.status === "OPEN" && pendingByOrderId.has(o.id) && (
+                              <button
+                                onClick={() => {
+                                  const pending = pendingByOrderId.get(o.id)!;
+                                  handleApproveSettlement(o.id, pending.quoteId);
+                                }}
+                                disabled={approving === o.id}
+                                title="Protocol liquidity is reserved for this order — approve to finish the on-chain settlement from your own wallet."
+                                className="flex h-7 items-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-2 text-xs font-medium text-foreground transition-colors hover:border-primary/60 disabled:opacity-50"
+                              >
+                                <Check className="size-3.5" />
+                                {approving === o.id ? "Approving…" : "Approve Settlement"}
+                              </button>
+                            )}
+                            {o.status === "OPEN" && (
+                              <button
+                                onClick={() => handleCancel(o.id)}
+                                aria-label="Cancel order"
+                                className="rounded p-1 text-muted-foreground transition-colors hover:bg-white/[0.05] hover:text-foreground"
+                              >
+                                <X className="size-4" />
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))
