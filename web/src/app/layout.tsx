@@ -6,6 +6,7 @@ import { NetworkProvider } from "@/network/NetworkProvider";
 import { WalletProvider } from "@/wallet/WalletProvider";
 import { WalletModal } from "@/wallet/WalletModal";
 import { WebNotificationEffect } from "@/components/settings/web-notification-effect";
+import { PpmSettlementToastEffect } from "@/components/settings/ppm-settlement-toast-effect";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -42,6 +43,7 @@ export default function RootLayout({
               <WalletModal />
               <Toaster theme="dark" position="bottom-right" />
               <WebNotificationEffect />
+              <PpmSettlementToastEffect />
             </TooltipProvider>
           </WalletProvider>
         </NetworkProvider>
