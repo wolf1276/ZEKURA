@@ -5,7 +5,6 @@ import { getOrderBook, getPpmStatus, getStats, getTrades, getTreasuryBalance } f
 import { matcher } from "@/services/matcher/matcherClient";
 import type { AssetPair } from "@/lib/types";
 import type {
-  MatcherEitherAsset,
   MatcherOrderBookLevel,
   MatcherOrderBookSnapshot,
   MatcherOrderSide,
@@ -40,10 +39,6 @@ export interface MarketDataState {
   ppmStatus: MatcherPpmStatus | null;
   loading: boolean;
   error: string | null;
-}
-
-function sameAsset(a: MatcherEitherAsset, b: MatcherEitherAsset): boolean {
-  return a.isLeft === b.isLeft && a.left === b.left && a.right === b.right;
 }
 
 function applyLevelDelta(
@@ -126,7 +121,10 @@ export function useMarketData(pair: AssetPair): MarketDataState {
   });
 
   useEffect(() => {
-    const asset: MatcherEitherAsset = { isLeft: true, left: pair.baseAssetId, right: pair.quoteAssetId };
+    // The contract's asset field only ever names the traded (non-NIGHT)
+    // asset — for this app's tNIGHT/tZKR pair that's always the quote asset
+    // (see hooks/use-submit-order.ts's OrderDetails.asset doc comment).
+    const asset = pair.quoteAssetId;
     let cancelled = false;
 
     setState({ orderBook: null, trades: [], stats: null, treasury: null, ppmStatus: null, loading: true, error: null });
@@ -187,7 +185,7 @@ export function useMarketData(pair: AssetPair): MarketDataState {
     const unsubscribe = matcher.subscribeMessages((message) => {
       switch (message.type) {
         case "order.created": {
-          if (!sameAsset(message.payload.asset, asset)) return;
+          if (message.payload.asset !== asset) return;
           const order = message.payload;
           setState((prev) =>
             prev.orderBook
@@ -198,7 +196,7 @@ export function useMarketData(pair: AssetPair): MarketDataState {
         }
         case "order.cancelled":
         case "order.expired": {
-          if (!sameAsset(message.payload.asset, asset)) return;
+          if (message.payload.asset !== asset) return;
           const order = message.payload;
           setState((prev) =>
             prev.orderBook
@@ -208,7 +206,7 @@ export function useMarketData(pair: AssetPair): MarketDataState {
           return;
         }
         case "order.matched": {
-          if (!sameAsset(message.payload.asset, asset)) return;
+          if (message.payload.asset !== asset) return;
           void refreshOrderBook();
           const match = message.payload;
           setState((prev) => {
@@ -227,7 +225,7 @@ export function useMarketData(pair: AssetPair): MarketDataState {
           // (treasury.reserved already triggers the Treasury-side refresh
           // below) and append it to the trade tape.
           if (!("order" in message.payload)) return;
-          if (!sameAsset(message.payload.order.asset, asset)) return;
+          if (message.payload.order.asset !== asset) return;
           void refreshOrderBook();
           const { order, price, amount, txId } = message.payload;
           setState((prev) => {
@@ -240,10 +238,9 @@ export function useMarketData(pair: AssetPair): MarketDataState {
         }
         // Treasury/PPM liquidity changed — cheap to just re-fetch rather
         // than reconcile a delta client-side, and these are rare relative
-        // to order.* events. Not asset-filtered: these events carry the
-        // on-chain deriveAssetKey(...) key, not this hook's off-chain
-        // {isLeft,left,right} shape, and computing that mapping in the
-        // browser isn't worth it for an occasional extra fetch.
+        // to order.* events. Not asset-filtered: refetching unconditionally
+        // is simpler than checking the event's assetKey against this pair's
+        // own asset, and the extra fetch is cheap.
         case "treasury.deposited":
         case "treasury.withdrawn":
         case "treasury.reserved":
@@ -267,7 +264,7 @@ export function useMarketData(pair: AssetPair): MarketDataState {
       window.clearInterval(orderBookInterval);
       window.clearInterval(treasuryInterval);
     };
-  }, [pair.baseAssetId, pair.quoteAssetId]);
+  }, [pair.quoteAssetId]);
 
   return state;
 }

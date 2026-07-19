@@ -90,12 +90,14 @@ export function useSubmitOrder() {
         const expiresAt = BigInt(expiryToUnixSeconds(input.expiry));
 
         const details: OrderDetailsValue = {
-          // This app's baseAssetId/quoteAssetId are placeholder Bytes<32>
-          // identifiers for its own demo trading pairs (see lib/mock/market.ts)
-          // — the contract's `asset` field doesn't document which side of
-          // Either is "base" vs "quote", so `left`/`right` here are just this
-          // app's own consistent convention for round-tripping the pair.
-          asset: { is_left: true, left: hexToBytes32(input.pair.baseAssetId), right: hexToBytes32(input.pair.quoteAssetId) },
+          // The contract's `asset` field only ever names the traded
+          // (non-NIGHT) asset's real unshielded color — NIGHT itself is
+          // handled implicitly via nativeToken() and never appears here (see
+          // contracts/exchange.compact's OrderDetails doc comment). For this
+          // app's tNIGHT/tZKR pair that's always the quote asset;
+          // baseAssetId (tNIGHT's placeholder) plays no role in the order's
+          // committed details.
+          asset: hexToBytes32(input.pair.quoteAssetId),
           isBuy: input.side === "BUY",
           price: BigInt(input.price),
           amount: BigInt(input.amount),
@@ -134,7 +136,7 @@ export function useSubmitOrder() {
 
         const { order } = await submitOrder({
           id: toHex(orderId),
-          asset: { isLeft: true, left: input.pair.baseAssetId, right: input.pair.quoteAssetId },
+          asset: input.pair.quoteAssetId,
           side: input.side,
           price: input.price,
           amount: input.amount,

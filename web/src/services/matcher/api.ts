@@ -13,7 +13,7 @@ import type {
   AdminWithdrawRequest,
   CreateOrderRequest,
   CreateOrderResponse,
-  MatcherEitherAsset,
+  MatcherAsset,
   MatcherErrorBody,
   MatcherOrder,
   MatcherOrderBookSnapshot,
@@ -72,24 +72,19 @@ export async function listOpenOrders(): Promise<{ orders: MatcherOrder[] }> {
   return parseJsonOrThrow<{ orders: MatcherOrder[] }>(response);
 }
 
-function assetParams(asset: MatcherEitherAsset): URLSearchParams {
-  return new URLSearchParams({ isLeft: String(asset.isLeft), left: asset.left, right: asset.right });
-}
-
-export async function getOrderBook(asset: MatcherEitherAsset): Promise<MatcherOrderBookSnapshot> {
-  const response = await fetch(`/api/matcher/orderbook?${assetParams(asset)}`);
+export async function getOrderBook(asset: MatcherAsset): Promise<MatcherOrderBookSnapshot> {
+  const response = await fetch(`/api/matcher/orderbook?${new URLSearchParams({ asset })}`);
   return parseJsonOrThrow<MatcherOrderBookSnapshot>(response);
 }
 
-export async function getTrades(asset: MatcherEitherAsset, limit = 50): Promise<{ trades: MatcherTrade[] }> {
-  const params = assetParams(asset);
-  params.set("limit", String(limit));
+export async function getTrades(asset: MatcherAsset, limit = 50): Promise<{ trades: MatcherTrade[] }> {
+  const params = new URLSearchParams({ asset, limit: String(limit) });
   const response = await fetch(`/api/matcher/trades?${params}`);
   return parseJsonOrThrow<{ trades: MatcherTrade[] }>(response);
 }
 
-export async function getStats(asset: MatcherEitherAsset, windowMs?: number): Promise<MatcherStats> {
-  const params = assetParams(asset);
+export async function getStats(asset: MatcherAsset, windowMs?: number): Promise<MatcherStats> {
+  const params = new URLSearchParams({ asset });
   if (windowMs !== undefined) params.set("windowMs", String(windowMs));
   const response = await fetch(`/api/matcher/stats?${params}`);
   return parseJsonOrThrow<MatcherStats>(response);
@@ -97,21 +92,14 @@ export async function getStats(asset: MatcherEitherAsset, windowMs?: number): Pr
 
 // ─── Treasury / PPM / Admin ─────────────────────────────────────────────
 //
-// Treasury/PPM balance routes are queryable two ways (see the Matcher's
-// treasuryAssetQuerySchema): by the raw on-chain assetKey directly — what
-// depositTreasury/withdrawTreasury actually key their ledger Maps by, e.g.
-// the real native tNIGHT token type (lib/nativeAsset.ts) — or by an
-// order-shaped {isLeft,left,right} asset, hashed server-side via
-// deriveAssetKey. These are NOT the same key. Admin funding always uses the
-// raw form; a specific trading pair's PPM liquidity uses the asset form.
+// Treasury/PPM balance routes are keyed by the raw on-chain assetKey — the
+// same value as a trading pair's own asset (e.g. the real native tNIGHT
+// token type (lib/nativeAsset.ts), or tZKR's minted color). Previously these
+// were two distinct keys (a raw token type vs. an order-shaped tuple hashed
+// server-side via deriveAssetKey); now one function covers both callers.
 
-export async function getTreasuryBalanceByKey(assetKey: string): Promise<MatcherTreasuryBalance> {
+export async function getTreasuryBalance(assetKey: MatcherAsset): Promise<MatcherTreasuryBalance> {
   const response = await fetch(`/api/matcher/treasury/balance?${new URLSearchParams({ assetKey })}`);
-  return parseJsonOrThrow<MatcherTreasuryBalance>(response);
-}
-
-export async function getTreasuryBalance(asset: MatcherEitherAsset): Promise<MatcherTreasuryBalance> {
-  const response = await fetch(`/api/matcher/treasury/balance?${assetParams(asset)}`);
   return parseJsonOrThrow<MatcherTreasuryBalance>(response);
 }
 
@@ -122,13 +110,8 @@ export async function getTreasuryHistory(limit = 50, kind?: MatcherTreasuryEvent
   return parseJsonOrThrow<MatcherTreasuryHistoryResponse>(response);
 }
 
-export async function getPpmStatusByKey(assetKey: string): Promise<MatcherPpmStatus> {
+export async function getPpmStatus(assetKey: MatcherAsset): Promise<MatcherPpmStatus> {
   const response = await fetch(`/api/matcher/ppm/status?${new URLSearchParams({ assetKey })}`);
-  return parseJsonOrThrow<MatcherPpmStatus>(response);
-}
-
-export async function getPpmStatus(asset: MatcherEitherAsset): Promise<MatcherPpmStatus> {
-  const response = await fetch(`/api/matcher/ppm/status?${assetParams(asset)}`);
   return parseJsonOrThrow<MatcherPpmStatus>(response);
 }
 

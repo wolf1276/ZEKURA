@@ -22,9 +22,7 @@ const STORAGE_KEY = "zekura:order-store";
 
 interface StoredOrder {
   details: {
-    assetIsLeft: boolean;
-    assetLeft: string;
-    assetRight: string;
+    asset: string;
     isBuy: boolean;
     price: string;
     amount: string;
@@ -54,9 +52,7 @@ export function saveOrderWitnessData(orderId: Uint8Array, details: OrderDetailsV
   const all = readAll();
   all[toHex(orderId)] = {
     details: {
-      assetIsLeft: details.asset.is_left,
-      assetLeft: toHex(details.asset.left),
-      assetRight: toHex(details.asset.right),
+      asset: toHex(details.asset),
       isBuy: details.isBuy,
       price: details.price.toString(),
       amount: details.amount.toString(),
@@ -73,7 +69,7 @@ export function getOrderWitnessData(orderId: Uint8Array): { details: OrderDetail
   if (!entry) return null;
   return {
     details: {
-      asset: { is_left: entry.details.assetIsLeft, left: fromHex(entry.details.assetLeft), right: fromHex(entry.details.assetRight) },
+      asset: fromHex(entry.details.asset),
       isBuy: entry.details.isBuy,
       price: BigInt(entry.details.price),
       amount: BigInt(entry.details.amount),

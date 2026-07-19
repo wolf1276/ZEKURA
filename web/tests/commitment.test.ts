@@ -28,7 +28,7 @@ function bytes32(fill: number): Uint8Array {
 describe('computeCommitment', () => {
   it('is deterministic for identical inputs', () => {
     const details: OrderDetailsValue = {
-      asset: { is_left: true, left: bytes32(1), right: bytes32(0) },
+      asset: bytes32(1),
       isBuy: true,
       price: 1000n,
       amount: 50n,
@@ -41,7 +41,7 @@ describe('computeCommitment', () => {
 
   it('changes when any single field changes (no accidental collisions)', () => {
     const base: OrderDetailsValue = {
-      asset: { is_left: true, left: bytes32(1), right: bytes32(0) },
+      asset: bytes32(1),
       isBuy: true,
       price: 1000n,
       amount: 50n,
@@ -62,7 +62,7 @@ describe('computeCommitment', () => {
 
   it('produces a fixed-length 32-byte commitment regardless of input values', () => {
     const details: OrderDetailsValue = {
-      asset: { is_left: false, left: bytes32(0), right: bytes32(255) },
+      asset: bytes32(255),
       isBuy: false,
       price: 0n,
       amount: 340282366920938463463374607431768211455n, // Uint<128> max

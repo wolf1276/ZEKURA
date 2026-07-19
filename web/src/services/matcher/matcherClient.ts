@@ -13,7 +13,7 @@
  */
 import { ASSET_PAIRS } from "@/lib/mock/market";
 import type { ActivityEvent, ActivityKind, Order, OrderStatus } from "@/lib/types";
-import type { MatcherEitherAsset, MatcherOrder, MatcherTreasuryEvent, MatcherWsMessage } from "@/types/matcher";
+import type { MatcherAsset, MatcherOrder, MatcherTreasuryEvent, MatcherWsMessage } from "@/types/matcher";
 import * as api from "./api";
 import { MatcherApiError } from "./api";
 
@@ -52,12 +52,16 @@ const RECONNECT_DELAY_MS = 3000;
 /** Safety net alongside the WS feed — same pattern/cadence as use-treasury.ts's own polling fallback, in case a WS message is missed during a reconnect or the socket never connects at all. */
 const POLL_FALLBACK_MS = 30_000;
 
-/** The Matcher only knows asset IDs, not this app's display symbols — resolve back via lib/mock/market.ts. */
-function pairLabelFor(asset: MatcherEitherAsset): string {
-  const known = ASSET_PAIRS.find(
-    (p) => p.baseAssetId === asset.left && p.quoteAssetId === asset.right,
-  );
-  return known ? `${known.base}/${known.quote}` : `${asset.left}/${asset.right}`;
+/**
+ * The Matcher only knows asset IDs, not this app's display symbols — resolve
+ * back via lib/mock/market.ts. The contract's asset field only ever names
+ * the traded (non-NIGHT) asset, so this matches against each pair's own
+ * quoteAssetId (see hooks/use-submit-order.ts's OrderDetails.asset doc
+ * comment).
+ */
+function pairLabelFor(asset: MatcherAsset): string {
+  const known = ASSET_PAIRS.find((p) => p.quoteAssetId === asset);
+  return known ? `${known.base}/${known.quote}` : asset;
 }
 
 function toOrder(o: MatcherOrder): Order {
@@ -297,7 +301,7 @@ class MatcherClient {
   private emitActivity(
     kind: ActivityKind,
     orderId: string,
-    asset: MatcherEitherAsset,
+    asset: MatcherAsset,
     price: string,
     amount: string,
   ) {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { getPpmStatusByKey, getTreasuryBalanceByKey, getTreasuryHistory } from "@/services/matcher/api";
+import { getPpmStatus, getTreasuryBalance, getTreasuryHistory } from "@/services/matcher/api";
 import { matcher } from "@/services/matcher/matcherClient";
 import { nativeAssetKeyHex } from "@/lib/nativeAsset";
 import type { MatcherPpmStatus, MatcherTreasuryBalance, MatcherTreasuryEvent } from "@/types/matcher";
@@ -19,10 +19,10 @@ export interface TreasuryState {
 
 /**
  * The Treasury's own top-level state for the real native tNIGHT asset —
- * distinct from useMarketData's per-trading-pair PPM liquidity (which is
- * keyed by deriveAssetKey(pair-as-order-asset), not the raw native token
- * type — see services/matcher/api.ts's doc comment). This is what the
- * Treasury page, Overview's Protocol Liquidity card, and Settings'
+ * distinct from useMarketData's per-trading-pair PPM liquidity (a different
+ * asset's Treasury entry — e.g. tZKR's — but the same kind of key now that
+ * an order's asset field *is* the Treasury's assetKey directly). This is
+ * what the Treasury page, Overview's Protocol Liquidity card, and Settings'
  * Developer section all read from.
  */
 export function useTreasury(): TreasuryState & { refresh: () => void } {
@@ -38,8 +38,8 @@ export function useTreasury(): TreasuryState & { refresh: () => void } {
     try {
       const assetKey = nativeAssetKeyHex();
       const [balance, ppmStatus, historyResponse] = await Promise.all([
-        getTreasuryBalanceByKey(assetKey),
-        getPpmStatusByKey(assetKey),
+        getTreasuryBalance(assetKey),
+        getPpmStatus(assetKey),
         getTreasuryHistory(HISTORY_LIMIT),
       ]);
       setState({ balance, ppmStatus, history: historyResponse.events, loading: false, error: null });

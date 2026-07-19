@@ -8,14 +8,16 @@
  * codec already implemented and exercised in tests/exchange.test.ts (see
  * that file's header comment) — not a reinvention. `@midnight-ntwrk/compact-runtime`'s
  * public `CompactType` primitives are used exactly as declared in the
- * contract's struct layout: `asset: Either<Bytes32,Bytes32>`,
- * `isBuy: Boolean`, `price/amount: Uint<128>`, `owner: ZswapCoinPublicKey`,
- * `expiresAt: Uint<64>`.
+ * contract's struct layout: `asset: Bytes<32>` (the traded asset's real,
+ * chain-wide unshielded token color — see
+ * docs/ARCHITECTURE_TZKR_UNSHIELDED_MIGRATION.md for why this is no longer
+ * an Either<Bytes32,Bytes32>), `isBuy: Boolean`, `price/amount: Uint<128>`,
+ * `owner: ZswapCoinPublicKey`, `expiresAt: Uint<64>`.
  */
 import * as rt from "@midnight-ntwrk/compact-runtime";
 
 export interface OrderDetailsValue {
-  asset: { is_left: boolean; left: Uint8Array; right: Uint8Array };
+  asset: Uint8Array;
   isBuy: boolean;
   price: bigint;
   amount: bigint;
@@ -26,32 +28,9 @@ export interface OrderDetailsValue {
 const Uint128Type = new rt.CompactTypeUnsignedInteger(340282366920938463463374607431768211455n, 16);
 const Uint64Type = new rt.CompactTypeUnsignedInteger(18446744073709551615n, 8);
 
-class EitherBytes32Type
-  implements rt.CompactType<{ is_left: boolean; left: Uint8Array; right: Uint8Array }>
-{
-  alignment() {
-    return rt.CompactTypeBoolean.alignment().concat(
-      rt.Bytes32Descriptor.alignment().concat(rt.Bytes32Descriptor.alignment()),
-    );
-  }
-  fromValue(value: rt.Value) {
-    return {
-      is_left: rt.CompactTypeBoolean.fromValue(value),
-      left: rt.Bytes32Descriptor.fromValue(value),
-      right: rt.Bytes32Descriptor.fromValue(value),
-    };
-  }
-  toValue(v: { is_left: boolean; left: Uint8Array; right: Uint8Array }) {
-    return rt.CompactTypeBoolean.toValue(v.is_left).concat(
-      rt.Bytes32Descriptor.toValue(v.left).concat(rt.Bytes32Descriptor.toValue(v.right)),
-    );
-  }
-}
-const eitherType = new EitherBytes32Type();
-
 class OrderDetailsType implements rt.CompactType<OrderDetailsValue> {
   alignment() {
-    return eitherType
+    return rt.Bytes32Descriptor
       .alignment()
       .concat(
         rt.CompactTypeBoolean.alignment().concat(
@@ -65,7 +44,7 @@ class OrderDetailsType implements rt.CompactType<OrderDetailsValue> {
   }
   fromValue(value: rt.Value): OrderDetailsValue {
     return {
-      asset: eitherType.fromValue(value),
+      asset: rt.Bytes32Descriptor.fromValue(value),
       isBuy: rt.CompactTypeBoolean.fromValue(value),
       price: Uint128Type.fromValue(value),
       amount: Uint128Type.fromValue(value),
@@ -74,8 +53,7 @@ class OrderDetailsType implements rt.CompactType<OrderDetailsValue> {
     };
   }
   toValue(v: OrderDetailsValue) {
-    return eitherType
-      .toValue(v.asset)
+    return rt.Bytes32Descriptor.toValue(v.asset)
       .concat(
         rt.CompactTypeBoolean.toValue(v.isBuy).concat(
           Uint128Type.toValue(v.price).concat(

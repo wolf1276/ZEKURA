@@ -16,15 +16,19 @@ export type MatcherOrderStatus =
   | "EXPIRED"
   | "FAILED";
 
-export interface MatcherEitherAsset {
-  isLeft: boolean;
-  left: string;
-  right: string;
-}
+/**
+ * The traded (non-NIGHT) asset's real, chain-wide unshielded token color —
+ * a plain Bytes<32> hex string, identical to the on-chain OrderDetails.asset
+ * field and the Treasury's assetKey (see contracts/exchange.compact and
+ * docs/ARCHITECTURE_TZKR_UNSHIELDED_MIGRATION.md). Previously an
+ * {isLeft,left,right} tuple hashed server-side via deriveAssetKey into an
+ * arbitrary key with no chain meaning.
+ */
+export type MatcherAsset = string;
 
 export interface MatcherOrder {
   id: string;
-  asset: MatcherEitherAsset;
+  asset: MatcherAsset;
   side: MatcherOrderSide;
   price: string;
   amount: string;
@@ -41,7 +45,7 @@ export interface MatcherMatch {
   id: string;
   buyOrderId: string;
   sellOrderId: string;
-  asset: MatcherEitherAsset;
+  asset: MatcherAsset;
   price: string;
   amount: string;
   matchedAt: number;
@@ -49,7 +53,7 @@ export interface MatcherMatch {
 
 export interface CreateOrderRequest {
   id: string;
-  asset: MatcherEitherAsset;
+  asset: MatcherAsset;
   side: MatcherOrderSide;
   price: string;
   amount: string;
@@ -111,7 +115,7 @@ export interface MatcherOrderBookLevel {
 }
 
 export interface MatcherOrderBookSnapshot {
-  asset: MatcherEitherAsset;
+  asset: MatcherAsset;
   /** Highest price first. */
   bids: MatcherOrderBookLevel[];
   /** Lowest price first. */
@@ -120,14 +124,14 @@ export interface MatcherOrderBookSnapshot {
 
 export interface MatcherTrade {
   id: string;
-  asset: MatcherEitherAsset;
+  asset: MatcherAsset;
   price: string;
   amount: string;
   matchedAt: number;
 }
 
 export interface MatcherStats {
-  asset: MatcherEitherAsset;
+  asset: MatcherAsset;
   lastPrice: string | null;
   openPrice: string | null;
   high: string | null;

@@ -5,17 +5,13 @@ import { getTrades } from "@/services/matcher/api";
 import { matcher } from "@/services/matcher/matcherClient";
 import { buildCandlesFromTrades } from "@/lib/candles";
 import type { AssetPair, Candle, Timeframe } from "@/lib/types";
-import type { MatcherEitherAsset, MatcherTrade } from "@/types/matcher";
+import type { MatcherTrade } from "@/types/matcher";
 
 // Real chart history needs more depth than the 50-trade cap useMarketData's
 // shared trade tape keeps for the Activity/Recent-Trades panels — this hook
 // fetches its own copy at a higher limit rather than raising that shared
 // cap for every other consumer.
 const CHART_TRADE_HISTORY_LIMIT = 1000;
-
-function sameAsset(a: MatcherEitherAsset, b: MatcherEitherAsset): boolean {
-  return a.isLeft === b.isLeft && a.left === b.left && a.right === b.right;
-}
 
 interface CandleState {
   trades: MatcherTrade[];
@@ -32,7 +28,10 @@ export function useCandles(pair: AssetPair, timeframe: Timeframe): { candles: Ca
   const [state, setState] = useState<CandleState>({ trades: [], loading: true });
 
   useEffect(() => {
-    const asset: MatcherEitherAsset = { isLeft: true, left: pair.baseAssetId, right: pair.quoteAssetId };
+    // The contract's asset field only ever names the traded (non-NIGHT)
+    // asset — for this app's tNIGHT/tZKR pair that's always the quote asset
+    // (see hooks/use-submit-order.ts's OrderDetails.asset doc comment).
+    const asset = pair.quoteAssetId;
     let cancelled = false;
 
     // Deliberately does not reset to {trades: [], loading: true} first — the
@@ -52,14 +51,14 @@ export function useCandles(pair: AssetPair, timeframe: Timeframe): { candles: Ca
 
     const unsubscribe = matcher.subscribeMessages((message) => {
       if (message.type === "order.matched") {
-        if (!sameAsset(message.payload.asset, asset)) return;
+        if (message.payload.asset !== asset) return;
         const match = message.payload;
         const trade: MatcherTrade = { id: match.id, asset: match.asset, price: match.price, amount: match.amount, matchedAt: match.matchedAt };
         setState((prev) => ({ ...prev, trades: [trade, ...prev.trades.filter((t) => t.id !== trade.id)].slice(0, CHART_TRADE_HISTORY_LIMIT) }));
         return;
       }
       if (message.type === "order.filled" && "order" in message.payload) {
-        if (!sameAsset(message.payload.order.asset, asset)) return;
+        if (message.payload.order.asset !== asset) return;
         const { order, price, amount, txId } = message.payload;
         const trade: MatcherTrade = { id: txId, asset: order.asset, price, amount, matchedAt: Date.now() };
         setState((prev) => ({ ...prev, trades: [trade, ...prev.trades.filter((t) => t.id !== trade.id)].slice(0, CHART_TRADE_HISTORY_LIMIT) }));
@@ -70,7 +69,7 @@ export function useCandles(pair: AssetPair, timeframe: Timeframe): { candles: Ca
       cancelled = true;
       unsubscribe();
     };
-  }, [pair.baseAssetId, pair.quoteAssetId]);
+  }, [pair.quoteAssetId]);
 
   return { candles: buildCandlesFromTrades(state.trades, timeframe), loading: state.loading };
 }
