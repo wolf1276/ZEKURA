@@ -27,6 +27,7 @@ import { getDeployment, getOrCreateAdminSecret, getOrCreateSeed, resolveNetwork 
 import { createWallet, persistWalletState, unshieldedToken } from '../../src/wallet.js';
 import { AdminAuth } from './api/middleware/adminAuth.js';
 import { buildApp } from './app.js';
+import { BootstrapPriceRepository } from './db/repositories/BootstrapPriceRepository.js';
 import { MatchRepository } from './db/repositories/MatchRepository.js';
 import { OrderRepository } from './db/repositories/OrderRepository.js';
 import { ReservationRepository } from './db/repositories/ReservationRepository.js';
@@ -141,6 +142,7 @@ async function main(): Promise<void> {
   const db = openDatabase(config.dbPath);
   const orderRepo = new OrderRepository(db);
   const matchRepo = new MatchRepository(db);
+  const bootstrapPriceRepo = new BootstrapPriceRepository(db);
 
   const seed = process.env[config.matcherSeedEnvVar]?.trim() || getOrCreateSeed(network, { cwd: repoRoot });
   logger.info({ network }, 'syncing matcher operator wallet');
@@ -325,6 +327,7 @@ async function main(): Promise<void> {
     getOrderBookSnapshot: (asset) => orderServiceRef!.getOrderBookSnapshot(asset),
     getMarketStats: (asset, windowMs) => orderServiceRef!.getMarketStats(asset, windowMs),
     treasuryClient,
+    bootstrapPriceRepo,
   });
   const pricingEngine = new PricingEngine(pricingConfig);
   const ppmService = new PPMService({
@@ -351,6 +354,7 @@ async function main(): Promise<void> {
     ppmService,
     reservationRepo,
     reservationReader,
+    bootstrapPriceRepo,
   });
   orderServiceRef = orderService;
 
@@ -386,7 +390,7 @@ async function main(): Promise<void> {
   const app = buildApp({
     orderService,
     treasury: { treasuryClient, treasuryRepo, pricingConfig },
-    admin: { adminAuth, treasuryClient, treasuryRepo, broadcaster, logger, onChainAdminActorId },
+    admin: { adminAuth, treasuryClient, treasuryRepo, bootstrapPriceRepo, matchRepo, broadcaster, logger, onChainAdminActorId },
     logger: true,
   });
   socketServer = new SocketServer(app.server, logger);

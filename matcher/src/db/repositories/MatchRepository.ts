@@ -63,6 +63,11 @@ export class MatchRepository {
     return row ? rowToMatch(row) : undefined;
   }
 
+  /** Whether this asset has ever had a real match — used to refuse (re)setting a bootstrap price once genuine trading exists (see api/admin.ts). */
+  hasAnyForAssetKey(assetKeyValue: string): boolean {
+    return this.db.prepare('SELECT 1 FROM matches WHERE asset_key = ? LIMIT 1').get(assetKeyValue) !== undefined;
+  }
+
   /** Most recent trades for one asset, newest first — the read path behind GET /trades. */
   listRecentByAssetKey(assetKeyValue: string, limit: number): Match[] {
     const rows = this.db

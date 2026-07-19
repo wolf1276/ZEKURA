@@ -1,6 +1,7 @@
+import type { BootstrapPriceRepository } from '../db/repositories/BootstrapPriceRepository.js';
 import type { OrderBookSnapshot } from '../orderbook/snapshot.js';
 import type { TreasuryClient, TreasuryLiquidity } from '../ppm/TreasuryClient.js';
-import type { Asset } from '../types/Asset.js';
+import { assetKey, type Asset } from '../types/Asset.js';
 import type { MarketStats } from '../types/MarketStats.js';
 
 /**
@@ -16,6 +17,8 @@ export interface MarketDataSnapshot {
   readonly orderBook: OrderBookSnapshot;
   readonly stats: MarketStats;
   readonly treasury: TreasuryLiquidity;
+  /** Admin-supplied bootstrap price for a virgin asset, or null once real trading has begun (see db/repositories/BootstrapPriceRepository.ts). */
+  readonly bootstrapPrice: bigint | null;
 }
 
 export interface MarketDataServiceDeps {
@@ -32,6 +35,7 @@ export interface MarketDataServiceDeps {
   readonly getOrderBookSnapshot: (asset: Asset) => OrderBookSnapshot;
   readonly getMarketStats: (asset: Asset, windowMs: number) => MarketStats;
   readonly treasuryClient: TreasuryClient;
+  readonly bootstrapPriceRepo: BootstrapPriceRepository;
 }
 
 export class MarketDataService {
@@ -43,7 +47,8 @@ export class MarketDataService {
     // asset *is* the Treasury's on-chain assetKey now (see types/Asset.ts) —
     // no separate mapping needed.
     const treasury = await this.deps.treasuryClient.getLiquidity(asset);
-    return { asset, orderBook, stats, treasury };
+    const bootstrapPrice = this.deps.bootstrapPriceRepo.get(assetKey(asset));
+    return { asset, orderBook, stats, treasury, bootstrapPrice };
   }
 
   /**
@@ -59,12 +64,20 @@ export class MarketDataService {
    * applied on top of the order's own price can never satisfy that same
    * order's own crossing check). No independent reference simply means no
    * quote — never a fabricated one derived from the thing being priced.
+   *
+   * Falls back to `bootstrapPrice` only when neither of those exist yet — a
+   * virgin asset with zero trade history and a one-sided book would
+   * otherwise never get a reference price at all (see
+   * db/repositories/BootstrapPriceRepository.ts). The moment the asset has a
+   * real match, its bootstrap row is deleted (OrderService.ts), so this
+   * fallback can never fire again for that asset once genuine price
+   * discovery exists.
    */
-  static referencePrice(snapshot: Pick<MarketDataSnapshot, 'stats' | 'orderBook'>): bigint | null {
+  static referencePrice(snapshot: Pick<MarketDataSnapshot, 'stats' | 'orderBook' | 'bootstrapPrice'>): bigint | null {
     if (snapshot.stats.lastPrice !== null) return snapshot.stats.lastPrice;
     const bestBid = snapshot.orderBook.bids[0]?.price;
     const bestAsk = snapshot.orderBook.asks[0]?.price;
     if (bestBid !== undefined && bestAsk !== undefined) return (bestBid + bestAsk) / 2n;
-    return null;
+    return snapshot.bootstrapPrice;
   }
 }

@@ -96,6 +96,8 @@ export const adminDepositSchema = z.object({
   auth: adminAuthSchema,
   assetKey: hex32Schema,
   amount: bigintStringSchema(UINT128_MAX_TREASURY, 'amount'),
+  /** Optional bootstrap reference price for a virgin asset with no trade history yet — see db/repositories/BootstrapPriceRepository.ts. Ignored once the asset has a real trade. */
+  bootstrapPrice: bigintStringSchema(UINT128_MAX, 'bootstrapPrice').optional(),
 });
 
 export const adminWithdrawSchema = z.object({

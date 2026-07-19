@@ -93,6 +93,22 @@ CREATE INDEX IF NOT EXISTS idx_treasury_events_asset      ON treasury_events(ass
 CREATE INDEX IF NOT EXISTS idx_treasury_events_kind       ON treasury_events(kind);
 CREATE INDEX IF NOT EXISTS idx_treasury_events_created_at ON treasury_events(created_at);
 
+-- A virgin asset (no trade in matches yet) has no lastPrice and, until a
+-- second resting order arrives on the opposite side, no two-sided book mid
+-- either — MarketDataService.referencePrice() would return null forever, so
+-- PricingEngine.quote() can never price a PPM fill and the order rests OPEN
+-- forever (see MarketDataService.ts's referencePrice doc comment). One row
+-- here is an admin-supplied bootstrap price to quote against until real
+-- price discovery takes over. Deleted the moment the asset's first real
+-- match lands (see OrderService.ts) so it can never be resurrected or
+-- outlive genuine trading — a bootstrap price and a lastPrice can never
+-- coexist for the same asset.
+CREATE TABLE IF NOT EXISTS bootstrap_prices (
+  asset_key  TEXT PRIMARY KEY,
+  price      TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
 -- Local mirror of the contract's on-chain reservations Map, plus
 -- matcher-only pricing context (order_id, the resting order this quote was
 -- generated for) the chain doesn't need to know. order_id references

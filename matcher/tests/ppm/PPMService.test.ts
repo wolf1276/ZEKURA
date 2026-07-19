@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { openDatabase } from '../../src/db/sqlite.js';
+import { BootstrapPriceRepository } from '../../src/db/repositories/BootstrapPriceRepository.js';
 import { OrderRepository } from '../../src/db/repositories/OrderRepository.js';
 import { ReservationRepository } from '../../src/db/repositories/ReservationRepository.js';
 import { TreasuryRepository } from '../../src/db/repositories/TreasuryRepository.js';
@@ -51,12 +52,15 @@ interface HarnessOpts {
   readonly settleFails?: boolean;
   readonly releaseFails?: boolean;
   readonly lastPrice?: bigint | null;
+  readonly bootstrapPrice?: bigint;
 }
 
 function makeHarness(opts: HarnessOpts) {
   const db = openDatabase(':memory:');
   const reservationRepo = new ReservationRepository(db);
   const treasuryRepo = new TreasuryRepository(db);
+  const bootstrapPriceRepo = new BootstrapPriceRepository(db);
+  if (opts.bootstrapPrice !== undefined) bootstrapPriceRepo.set(ASSET, opts.bootstrapPrice, NOW_MS);
 
   const caller: PpmCircuitCaller = {
     reserveLiquidity: vi.fn(async () => {
@@ -94,6 +98,7 @@ function makeHarness(opts: HarnessOpts) {
       changePct: null,
     }),
     treasuryClient,
+    bootstrapPriceRepo,
   });
 
   const pricingEngine = new PricingEngine({ ...DEFAULT_PRICING_CONFIG, baseSpreadBps: 100, inventorySkewBps: 0 });
@@ -111,7 +116,7 @@ function makeHarness(opts: HarnessOpts) {
   });
 
   const orderRepo = new OrderRepository(db);
-  return { service, reservationRepo, treasuryRepo, orderRepo, events, caller };
+  return { service, reservationRepo, treasuryRepo, bootstrapPriceRepo, orderRepo, events, caller };
 }
 
 describe('PPMService.attemptFill', () => {
@@ -119,6 +124,31 @@ describe('PPMService.attemptFill', () => {
     const { service } = makeHarness({ liquidity: { balance: 0n, reserved: 0n, available: 0n } });
     const result = await service.attemptFill(sampleOrder());
     expect(result).toEqual({ pending: false, reason: 'Protocol liquidity unavailable.' });
+  });
+
+  it('a virgin asset (no lastPrice, no bootstrap) still cannot be quoted — the cold-start case without a fix', async () => {
+    const { service, caller } = makeHarness({
+      liquidity: { balance: 10_000n, reserved: 0n, available: 10_000n },
+      lastPrice: null,
+    });
+    const result = await service.attemptFill(sampleOrder({ price: 1_100n }));
+    expect(result).toEqual({ pending: false, reason: 'Protocol liquidity unavailable.' });
+    expect(caller.reserveLiquidity).not.toHaveBeenCalled();
+  });
+
+  it('a virgin asset with an admin-supplied bootstrap price gets a real quote', async () => {
+    const { service, orderRepo } = makeHarness({
+      liquidity: { balance: 10_000n, reserved: 0n, available: 10_000n },
+      lastPrice: null,
+      bootstrapPrice: 1_000n,
+    });
+    const order = sampleOrder({ price: 1_100n, amount: 100n });
+    orderRepo.insert(order);
+
+    const result = await service.attemptFill(order);
+    expect(result.pending).toBe(true);
+    if (!result.pending) throw new Error('unreachable');
+    expect(result.price).toBe(1_010n); // bootstrap 1000 + 1% base spread
   });
 
   it("does not fill when the order's limit price does not cross the protocol's quote", async () => {

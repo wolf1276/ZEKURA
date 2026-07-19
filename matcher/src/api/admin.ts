@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
 import type { AdminAuth } from './middleware/adminAuth.js';
+import type { BootstrapPriceRepository } from '../db/repositories/BootstrapPriceRepository.js';
+import type { MatchRepository } from '../db/repositories/MatchRepository.js';
 import type { TreasuryRepository } from '../db/repositories/TreasuryRepository.js';
 import { userAddressRecipient, type TreasuryClient } from '../ppm/TreasuryClient.js';
 import type { Hex32 } from '../types/Asset.js';
@@ -14,6 +16,8 @@ export interface AdminRoutesDeps {
   readonly adminAuth: AdminAuth;
   readonly treasuryClient: TreasuryClient;
   readonly treasuryRepo: TreasuryRepository;
+  readonly bootstrapPriceRepo: BootstrapPriceRepository;
+  readonly matchRepo: MatchRepository;
   readonly broadcaster: Broadcaster;
   readonly logger: Logger;
   /** deriveAdminId(treasuryAdminSecretHex) — the same on-chain identity every admin-gated circuit call is actually authorized under (see src/index.ts). Recorded as the local treasury_events row's `actor`, matching the contract's own TreasuryTx.actor semantics; which *HTTP*-authenticated wallet address triggered a given call is logged separately (see below), not stored in this column. */
@@ -50,7 +54,7 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AdminRoutesDeps)
     if (!parsed.success) {
       return reply.code(400).send({ error: 'validation_failed', issues: parsed.error.issues });
     }
-    const { auth, assetKey, amount } = parsed.data;
+    const { auth, assetKey, amount, bootstrapPrice } = parsed.data;
     const adminAddress = deps.adminAuth.verify(auth.address, auth.publicKey, auth.signature);
     if (!adminAddress) {
       return reply.code(401).send({ error: 'UNAUTHORIZED', message: 'Invalid or expired admin credentials' });
@@ -60,6 +64,13 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AdminRoutesDeps)
     if (result.outcome !== 'success') {
       deps.logger.error({ adminAddress, assetKey, amount, result }, 'admin depositTreasury did not succeed');
       return reply.code(DEPOSIT_ERROR_STATUS[result.outcome] ?? 502).send({ error: result.outcome, message: result.message });
+    }
+
+    // Only meaningful for a virgin asset: once it has a real trade, its
+    // reference price comes from that trade forever and a bootstrap price
+    // must never be (re)injected (see BootstrapPriceRepository.clear).
+    if (bootstrapPrice !== undefined && !deps.matchRepo.hasAnyForAssetKey(assetKey)) {
+      deps.bootstrapPriceRepo.set(assetKey, bootstrapPrice, now());
     }
 
     deps.treasuryRepo.insert({

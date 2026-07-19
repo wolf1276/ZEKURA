@@ -17,6 +17,7 @@ describe('openDatabase', () => {
     const db = openDatabase(':memory:');
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>;
     expect(tables.map((t) => t.name).sort()).toEqual([
+      'bootstrap_prices',
       'matches',
       'orders',
       'ppm_reservations',

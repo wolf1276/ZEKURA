@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { BootstrapPriceRepository } from '../../src/db/repositories/BootstrapPriceRepository.js';
 import { MatchRepository } from '../../src/db/repositories/MatchRepository.js';
 import { OrderRepository } from '../../src/db/repositories/OrderRepository.js';
 import { openDatabase } from '../../src/db/sqlite.js';
@@ -68,6 +69,7 @@ function makeHarness() {
   const db = openDatabase(':memory:');
   const orderRepo = new OrderRepository(db);
   const matchRepo = new MatchRepository(db);
+  const bootstrapPriceRepo = new BootstrapPriceRepository(db);
   const orderBook = new OrderBook();
   const matchingEngine = new MatchingEngine(orderBook, new PriceTimePriorityStrategy());
   const onChainReader = new FakeOnChainReader();
@@ -85,9 +87,10 @@ function makeHarness() {
     broadcaster,
     logger,
     onMatch,
+    bootstrapPriceRepo,
   });
 
-  return { db, orderRepo, matchRepo, orderBook, onChainReader, events, onMatch, service };
+  return { db, orderRepo, matchRepo, bootstrapPriceRepo, orderBook, onChainReader, events, onMatch, service };
 }
 
 describe('OrderService.submitOrder', () => {
@@ -188,6 +191,21 @@ describe('OrderService.submitOrder', () => {
     expect(harness.orderBook.has(buy.id)).toBe(false);
     expect(harness.onMatch).toHaveBeenCalledTimes(1);
     expect(harness.events.map(([t]) => t)).toEqual(['order.created', 'order.created', 'order.matched']);
+  });
+
+  it('retires the asset bootstrap price the moment it gets a real match', async () => {
+    harness.bootstrapPriceRepo.set(ASSET, 1_000n, Date.now());
+    expect(harness.bootstrapPriceRepo.get(ASSET)).toBe(1_000n);
+
+    const sell = buildInput({ id: hexFill('03'), side: 'SELL', price: 90n, amount: 10n, ownerId: hexFill('55'), signature: hexFill('11') });
+    const buy = buildInput({ id: hexFill('04'), side: 'BUY', price: 100n, amount: 10n, ownerId: hexFill('66'), signature: hexFill('22') });
+    harness.onChainReader.register(sell.id, { state: 'OPEN', commitment: sell.commitment });
+    harness.onChainReader.register(buy.id, { state: 'OPEN', commitment: buy.commitment });
+
+    await harness.service.submitOrder(sell);
+    await harness.service.submitOrder(buy);
+
+    expect(harness.bootstrapPriceRepo.get(ASSET)).toBeNull();
   });
 
   it('does not match orders from the same owner (self-trade prevention)', async () => {

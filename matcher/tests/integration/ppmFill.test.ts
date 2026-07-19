@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { BootstrapPriceRepository } from '../../src/db/repositories/BootstrapPriceRepository.js';
 import { MatchRepository } from '../../src/db/repositories/MatchRepository.js';
 import { OrderRepository } from '../../src/db/repositories/OrderRepository.js';
 import { ReservationRepository } from '../../src/db/repositories/ReservationRepository.js';
@@ -76,6 +77,7 @@ function buildSystem(liquidity: TreasuryLiquidity, now: () => number = () => Dat
   const db = openDatabase(':memory:');
   const orderRepo = new OrderRepository(db);
   const matchRepo = new MatchRepository(db);
+  const bootstrapPriceRepo = new BootstrapPriceRepository(db);
   const reservationRepo = new ReservationRepository(db);
   const treasuryRepo = new TreasuryRepository(db);
   const orderBook = new OrderBook();
@@ -126,6 +128,7 @@ function buildSystem(liquidity: TreasuryLiquidity, now: () => number = () => Dat
     getOrderBookSnapshot: (asset) => orderServiceRef!.getOrderBookSnapshot(asset),
     getMarketStats: (asset, windowMs) => orderServiceRef!.getMarketStats(asset, windowMs),
     treasuryClient,
+    bootstrapPriceRepo,
   });
   const pricingEngine = new PricingEngine({ ...DEFAULT_PRICING_CONFIG, baseSpreadBps: 100, inventorySkewBps: 0 });
   const ppmService = new PPMService({
@@ -148,6 +151,7 @@ function buildSystem(liquidity: TreasuryLiquidity, now: () => number = () => Dat
     ppmService,
     reservationRepo,
     reservationReader,
+    bootstrapPriceRepo,
     now,
   });
   orderServiceRef = orderService;
@@ -158,7 +162,7 @@ function buildSystem(liquidity: TreasuryLiquidity, now: () => number = () => Dat
     reservationRegistry.set(quoteId, 'EXECUTED');
   };
 
-  return { orderRepo, matchRepo, reservationRepo, treasuryRepo, onChainRegistry, reservationRegistry, events, orderService, ppmService, settleOnChain };
+  return { orderRepo, matchRepo, bootstrapPriceRepo, reservationRepo, treasuryRepo, onChainRegistry, reservationRegistry, events, orderService, ppmService, settleOnChain };
 }
 
 /**

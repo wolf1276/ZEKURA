@@ -1,3 +1,4 @@
+import type { BootstrapPriceRepository } from '../db/repositories/BootstrapPriceRepository.js';
 import type { MatchRepository } from '../db/repositories/MatchRepository.js';
 import type { OrderRepository } from '../db/repositories/OrderRepository.js';
 import type { ReservationRepository } from '../db/repositories/ReservationRepository.js';
@@ -91,6 +92,8 @@ export interface OrderServiceDeps {
   readonly reservationRepo?: ReservationRepository;
   /** Optional: free on-chain read of a reservation's state — the authoritative signal that a user-submitted settleWithProtocol landed. */
   readonly reservationReader?: OnChainReservationReader;
+  /** Optional: retires an asset's bootstrap price the moment it has a real match — absent only in tests that don't exercise bootstrap pricing. */
+  readonly bootstrapPriceRepo?: BootstrapPriceRepository;
   readonly now?: () => number;
 }
 
@@ -122,6 +125,7 @@ export class OrderService {
   private readonly ppmService: PPMService | undefined;
   private readonly reservationRepo: ReservationRepository | undefined;
   private readonly reservationReader: OnChainReservationReader | undefined;
+  private readonly bootstrapPriceRepo: BootstrapPriceRepository | undefined;
   private readonly now: () => number;
 
   constructor(deps: OrderServiceDeps) {
@@ -137,6 +141,7 @@ export class OrderService {
     this.ppmService = deps.ppmService;
     this.reservationRepo = deps.reservationRepo;
     this.reservationReader = deps.reservationReader;
+    this.bootstrapPriceRepo = deps.bootstrapPriceRepo;
     this.now = deps.now ?? (() => Date.now());
   }
 
@@ -282,6 +287,9 @@ export class OrderService {
 
     this.orderBook.remove(match.buyOrderId);
     this.orderBook.remove(match.sellOrderId);
+    // Genuine price discovery now exists for this asset — retire its
+    // bootstrap price permanently (see BootstrapPriceRepository.clear).
+    this.bootstrapPriceRepo?.clear(match.asset);
     this.broadcaster.broadcast('order.matched', match);
     this.onMatch(match);
 
