@@ -1,11 +1,23 @@
 # Architectural blocker: tZKR cannot be custodied by Treasury — and the production fix
 
-**Status:** BLOCKED on a genuine Compact/Midnight platform limitation, not a wiring bug.
-**Discovered:** 2026-07-19, via direct read-only query of the live Preprod exchange
-ledger (not code review alone — see "Evidence" below).
-**Affects:** `contracts/tzkr-token.compact`, `contracts/exchange.compact`
+**Status: RESOLVED, 2026-07-19 (same day, later pass).** Section 4's redesign
+below was implemented in full: `contracts/tzkr-token.compact` is now a
+genuine unshielded token (`mintUnshieldedToken`), `OrderDetails.asset` is a
+plain `Bytes<32>` (no more `deriveAssetKey`), and both contracts were
+redeployed to Preprod (Exchange `f7080eee45c16db312e7b389dfb42963b30c7b3cd333292f689abf4e5973a949`,
+tZKR `ee51fd584a48884b264adaf2fef0f5c00098084404e52cb9f5fd7e079d9c250c`,
+real minted color `5698abe70f5108b2b7607846049c4bf9890f50868686823b3fc8342f230a2760`
+— see Deployment.md). The Treasury was seeded with real tZKR and NIGHT, and
+a live end-to-end trade (both `settle()` and `settleWithProtocol`) moved
+real tZKR and NIGHT balances — confirmed by a direct on-chain read, not
+just a passing transaction. The rest of this document is kept as the
+historical record of the root cause and the fix that closed it.
+
+**Originally discovered:** 2026-07-19, via direct read-only query of the live
+Preprod exchange ledger (not code review alone — see "Evidence" below).
+**Affected (at the time):** `contracts/tzkr-token.compact`, `contracts/exchange.compact`
 (`OrderDetails.asset`, `deriveAssetKey`, every Treasury circuit), the Matcher's
-asset-key handling, and every web surface that assumes tZKR moves through
+asset-key handling, and every web surface that assumed tZKR moved through
 Treasury the same way NIGHT does.
 
 ---

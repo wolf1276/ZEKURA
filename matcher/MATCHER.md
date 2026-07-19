@@ -12,7 +12,7 @@ OrderBook                         Map<assetKey, AssetBook>
                                    + an orderId → price map for O(1) removal
 ```
 
-`assetKey` (`types/Asset.ts`) encodes the **full** `(isLeft, left, right)` tuple, not just the active branch — the contract's `settle()` compares `buyDetails.asset == sellDetails.asset` as full structural equality, so the Matcher's own partition key has to use the same equality or it could consider two orders "matched" that `settle()` would then reject.
+`assetKey` (`types/Asset.ts`) is the traded asset's real unshielded token color — a plain `Bytes<32>` hex string, identical to the on-chain `OrderDetails.asset` field and the Treasury's own `assetKey`. The contract's `settle()` compares `buyDetails.asset == sellDetails.asset` directly, so the Matcher's own partition key uses the same direct equality, guaranteeing anything it considers "matched" will actually be accepted by `settle()`.
 
 Every operation is either O(1) (`add`, `has`) or bounded to one asset's one bucket (`remove`, `oppositeBucket`) — the book is never scanned wholesale, and `Bucket.iterateInPriorityOrder()` is a lazy generator so a caller can stop at the first hit without materializing the rest.
 

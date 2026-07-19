@@ -406,29 +406,27 @@ solve: a resting order with no crossing counterparty yet.
   `exchange.compact` circuit; there is no off-chain-only "protocol fill" —
   every PPM execution has a real transaction id, exactly like `settle()`.
 
-### MVP limitation: BUY-side only
+### Both BUY and SELL are supported — but require the order's own wallet to finish the fill
 
 | | User ↔ User matching | PPM (protocol liquidity) |
 |---|---|---|
 | BUY | ✅ | ✅ |
-| SELL | ✅ | ❌ (disabled) |
+| SELL | ✅ | ✅ |
 
-`settleWithProtocol`'s SELL-side branch requires the Treasury to *receive*
-the traded asset from the seller (`receiveUnshielded`) as part of the same
-transaction — but every Treasury/PPM on-chain call is submitted by the
-Matcher's own single operator wallet, which never custodies user funds and
-has no escrow or co-signing mechanism for a user to supply that asset as a
-transaction input. Attempting it would either fail outright or, worse,
-silently debit the operator wallet's own balance while marking the user's
-sell order `FILLED` without ever taking their asset.
-
-`PPMService.attemptFill` declines every SELL order up front
-(`"Protocol liquidity fills are only available for buy orders."`) and lets it
-rest OPEN for a user counterparty exactly as if no PPM existed. **This is an
-explicit MVP design decision, not a bug** — closing it requires a secure
-multi-asset custody/escrow leg for the Treasury to receive a user's asset,
-which is intentionally out of scope until that's built (see
-["Roadmap"](#roadmap)).
+`settleWithProtocol` moves a real NIGHT payment on both branches (the
+Treasury receives it from the buyer on a BUY, pays it to the seller on a
+SELL — `contracts/exchange.compact`'s `nativeToken()` payment leg) and, on
+a SELL, also *receives* the traded asset from the seller
+(`receiveUnshielded`). Because `receiveUnshielded` always pulls funds from
+whoever *submits* the transaction, and the Matcher's own operator wallet
+never custodies user funds, **the order's own wallet — not the Matcher —
+must submit the final `settleWithProtocol` call for both BUY and SELL**.
+`PPMService.attemptFill` reserves liquidity and returns a pending quote;
+the web app's Orders page then shows an "Approve Settlement" button
+(`hooks/use-order-actions.ts`'s `settleWithProtocol`) that submits it from
+the order owner's own connected wallet. This is an architectural
+consequence of the fix, not a bug: it is the only way a PPM fill can
+happen without the Matcher ever holding a user's funds.
 
 ## Treasury
 
@@ -859,18 +857,21 @@ contract are in [`matcher/API.md`](./matcher/API.md).
 | Network | Contract Address | Deployed |
 |---|---|---|
 | **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` (post-audit build) | 2026-07-15 |
-| **Preprod** (default network) | `20f760d5e29cd868a2d7a25872e71cb042d8f68130e932a13e5111e5136d05c9` (NIGHT-payment-leg + SELL-PPM build, 12 circuits — see below and Deployment.md) | 2026-07-17 |
-| **Preprod — tZKR token** | `b16fbbec8ed99e38b16aa56166a646a1c71fd4a8e902fd0e357825d9a59efea4` (`contracts/tzkr-token.compact`) | 2026-07-17 |
+| **Preprod** (default network) | `f7080eee45c16db312e7b389dfb42963b30c7b3cd333292f689abf4e5973a949` (simplified `OrderDetails.asset` — plain `Bytes<32>`, no more `deriveAssetKey`; 12 circuits — see Deployment.md) | 2026-07-19 |
+| **Preprod — tZKR token** | `ee51fd584a48884b264adaf2fef0f5c00098084404e52cb9f5fd7e079d9c250c` (`contracts/tzkr-token.compact`, native unshielded token) — real minted color `5698abe70f5108b2b7607846049c4bf9890f50868686823b3fc8342f230a2760` | 2026-07-19 |
 | Undeployed (local devnet) | not persistent — redeploy via `npm run setup` | — |
 
-**tZKR cannot currently move through Treasury** (BUY/SELL against protocol
-liquidity) — this is a genuine Compact/Midnight platform limitation (no
-contract-to-contract calls yet), not a wiring gap. Confirmed 2026-07-19 by a
-live read-only query of the deployed contract's ledger. Full root cause and
-production redesign plan:
+**tZKR now moves through Treasury for real** — it was rebuilt as a genuine
+unshielded token (`mintUnshieldedToken`, the same primitive class NIGHT
+itself is built from) instead of an OpenZeppelin Compact `FungibleToken`
+composition, which kept balances in a contract-internal ledger the Treasury
+could never custody (no C2C calls yet to bridge the two accounting
+systems). Full root cause and the redesign that closed it:
 [`docs/ARCHITECTURE_TZKR_UNSHIELDED_MIGRATION.md`](./docs/ARCHITECTURE_TZKR_UNSHIELDED_MIGRATION.md).
-The NIGHT-only side of Treasury/PPM is unaffected and has real on-chain
-evidence of working correctly.
+The Preprod Treasury is seeded with real on-chain liquidity for both
+assets (1,000,000 NIGHT, 100,000 tZKR at last count — see Deployment.md),
+and a live end-to-end trade (both user↔user `settle()` and a protocol-
+liquidity `settleWithProtocol` fill) has been exercised against it.
 
 **This table is hand-maintained and has drifted from the real deployment
 record before** (two stale addresses were live in this file for two days
@@ -899,12 +900,23 @@ Compiles [`contracts/exchange.compact`](./contracts/exchange.compact) to
 `contracts/managed/exchange/` — 12 circuits (`createOrder`, `cancelOrder`,
 `expireOrder`, `settle`, `addAdmin`, `removeAdmin`, `depositTreasury`,
 `withdrawTreasury`, `reserveLiquidity`, `releaseLiquidity`,
-`releaseExpiredLiquidity`, `settleWithProtocol`), plus 3 exported `pure`
-circuits (`deriveOwnerId`, `deriveAssetKey`, `deriveAdminId`), compiler
-`0.31.1`, language version `0.23.0`, runtime `0.16.0`. (`getOrder` was
-dropped 2026-07-17 — see "Staged deployment" below; order state is read for
-free via the indexer instead, exactly like the Treasury getters already
-were.)
+`releaseExpiredLiquidity`, `settleWithProtocol`), plus 2 exported `pure`
+circuits (`deriveOwnerId`, `deriveAdminId`), compiler `0.31.1`, language
+version `0.23.0`, runtime `0.16.0`. (`getOrder` was dropped 2026-07-17 — see
+"Staged deployment" below; order state is read for free via the indexer
+instead, exactly like the Treasury getters already were. `deriveAssetKey`
+was dropped 2026-07-19 alongside `OrderDetails.asset`'s simplification to a
+plain `Bytes<32>` — see "tZKR" above and
+[`docs/ARCHITECTURE_TZKR_UNSHIELDED_MIGRATION.md`](./docs/ARCHITECTURE_TZKR_UNSHIELDED_MIGRATION.md).)
+
+Separately, [`contracts/tzkr-token.compact`](./contracts/tzkr-token.compact)
+compiles to `contracts/managed/tzkr-token/` via `npm run compile:tzkr` — a
+single owner-gated `mint(sk, recipient, amount)` circuit (plus the
+`deriveOwnerKey` pure helper) that mints a real chain-wide unshielded token
+color via `mintUnshieldedToken`. Real unshielded tokens carry no on-chain
+metadata/transfer circuits (a wallet spends its own UTXOs directly once
+minted), so this contract is deliberately much smaller than a
+name/symbol/balanceOf/transfer-style token contract.
 
 ### Deploy
 
@@ -994,8 +1006,13 @@ sequence and independent on-chain verification.
 | `releaseExpiredLiquidity(quoteId)` | Time-based (`blockTimeGte(expiresAt)`) — callable by anyone once expired | Permissionless safety valve reclaiming an expired, still-open reservation |
 | `settleWithProtocol(orderId, quoteId, recipient)` | Commitment verification + business-rule asserts, no caller-identity check | Fills one user order against an open PPM reservation instead of a second user order |
 | `deriveOwnerId(secretKey)` *(pure, exported)* | — | Derives a wallet's DApp-specific pseudonymous identity, so off-chain code can compute the identical value |
-| `deriveAssetKey(asset)` *(pure, exported)* | — | Maps an `Either<shielded, unshielded>` asset descriptor to the `Bytes<32>` key the Treasury's ledger `Map`s actually use |
 | `deriveAdminId(secretKey)` *(pure, exported)* | — | Derives an admin wallet's on-chain identity for `requireAdmin()`, so off-chain admin tooling can compute the identical value |
+
+`OrderDetails.asset` (the traded, non-NIGHT asset in every order) is a
+plain `Bytes<32>` — the traded asset's real unshielded token color,
+identical in shape and value to the Treasury's own `assetKey`. No hashing
+indirection: `settle()`/`settleWithProtocol()` compare it directly against
+a counterparty order's asset or a reservation's `assetKey`.
 
 ### State machine
 
@@ -1019,18 +1036,18 @@ underneath this.
 ## Testing
 
 Three independent, offline test suites — no devnet, proof server, or wallet
-required for any of them — cover **284 tests** across the whole system:
+required for any of them — cover **300 tests** across the whole system:
 
 ```bash
-npm run test                     # root: 60/60 — contracts/exchange.compact (34 order/settlement + 26 Treasury/PPM)
-npm run test --workspace=matcher  # matcher: 205/205 — order book, matching, settlement, PPM, Treasury, API
+npm run test                     # root: 68/68 — contracts/exchange.compact (34 order/settlement + 28 Treasury/PPM) + tzkr-token.compact (6)
+npm run test --workspace=matcher  # matcher: 213/213 — order book, matching, settlement, PPM, Treasury, API
 cd web && npm run test            # web: 19/19 — commitment codec, formatting, order-status logic
 ```
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| **Root** (`tests/exchange.test.ts` + `tests/treasury.test.ts`) | 60 (34 + 26) | Drives the compiled circuits directly through `@midnight-ntwrk/compact-runtime`'s in-memory `CircuitContext`. `exchange.test.ts` covers `createOrder`/`getOrder`/`cancelOrder` positive and negative paths (including the owner-identity regression test for the audit's P0 finding), `settle`/`expireOrder` matching, mismatches, replay, atomicity, boundary values, and the **privacy invariant** test — asserting the ledger never leaks `amount`, `price`, `owner`, `asset`, `isBuy`, or `expiresAt`. `treasury.test.ts` covers admin-only enforcement on `depositTreasury`/`withdrawTreasury`, admin rotation (including the last-admin-cannot-be-removed guard), the full `reserveLiquidity` → `settleWithProtocol`/`releaseLiquidity`/`releaseExpiredLiquidity` lifecycle for both BUY and SELL, and rejection paths (insufficient balance, duplicate quote id, expired reservation, amount/asset mismatch, replay). |
-| **Matcher** (`matcher/tests/`) | 205, >95% line coverage enforced | The in-memory order book, price-time-priority matching engine, SQLite persistence, settlement retry queue, REST/WebSocket API, commitment verification against on-chain state, and the PPM's `PricingEngine` (spread/inventory-skew quoting, risk-limit enforcement) and `PPMService` (quote → reserve → settle orchestration, BUY-only enforcement, expired-reservation sweep) — exercised with real SQLite (`:memory:`) and real matching/pricing logic; only the seams that face the live network (`SettleCircuitCaller`, `OnChainOrderReader`, `PpmCircuitCaller`, `OnChainTreasuryReader`) are faked. |
+| **Root** (`tests/exchange.test.ts` + `tests/treasury.test.ts` + `tests/tzkr-token.test.ts`) | 68 (34 + 28 + 6) | Drives the compiled circuits directly through `@midnight-ntwrk/compact-runtime`'s in-memory `CircuitContext`. `exchange.test.ts` covers `createOrder`/`getOrder`/`cancelOrder` positive and negative paths (including the owner-identity regression test for the audit's P0 finding), `settle`/`expireOrder` matching, mismatches, replay, atomicity, boundary values, and the **privacy invariant** test — asserting the ledger never leaks `amount`, `price`, `owner`, `asset`, `isBuy`, or `expiresAt`. `treasury.test.ts` covers admin-only enforcement on `depositTreasury`/`withdrawTreasury`, admin rotation (including the last-admin-cannot-be-removed guard), the full `reserveLiquidity` → `settleWithProtocol`/`releaseLiquidity`/`releaseExpiredLiquidity` lifecycle for both BUY and SELL (including the payout-redirect regression test for the settleWithProtocol owner-authorization fix), and rejection paths (insufficient balance, duplicate quote id, expired reservation, amount/asset mismatch, replay). `tzkr-token.test.ts` covers `contracts/tzkr-token.compact`'s mint authorization and color-stability guarantees. |
+| **Matcher** (`matcher/tests/`) | 213, >95% line coverage enforced | The in-memory order book, price-time-priority matching engine, SQLite persistence, settlement retry queue, REST/WebSocket API, commitment verification against on-chain state, and the PPM's `PricingEngine` (spread/inventory-skew quoting, risk-limit enforcement) and `PPMService` (quote → reserve → pending-settlement orchestration for both BUY and SELL, expired-reservation sweep) — exercised with real SQLite (`:memory:`) and real matching/pricing logic; only the seams that face the live network (`SettleCircuitCaller`, `OnChainOrderReader`, `PpmCircuitCaller`, `OnChainTreasuryReader`) are faked. |
 | **Web** (`web/tests/`) | 19 | The browser-side `OrderDetails` commitment codec (determinism and no-collision checks on the exact `persistentCommit` encoding a wallet must reproduce bit-for-bit) and the pure formatting/order-status logic the UI renders from. |
 
 ```bash
@@ -1063,7 +1080,7 @@ check:
 flowchart LR
     A["compile-contract<br/>installs the Compact toolchain,<br/>compiles exchange.compact,<br/>uploads the artifact"]
     B["contract-tests<br/>root typecheck + 60 tests"]
-    C["matcher<br/>typecheck + lint + 205 tests"]
+    C["matcher<br/>typecheck + lint + 213 tests"]
     D["web<br/>typecheck + lint + 19 tests + production build"]
     A --> B
     A --> C
@@ -1082,7 +1099,7 @@ and `web` then run **in parallel**, each downloading that artifact.
 |---|---|
 | `compile-contract` | Install the pinned Compact toolchain (`compact update 0.31.1`) → `compact compile` → upload `contracts/managed/exchange` as an artifact |
 | `contract-tests` | Download the artifact → `npm ci` (root) → `npm run build` (typecheck) → `npm run test` (60 tests: 34 order/settlement + 26 Treasury/PPM) |
-| `matcher` | Download the artifact → `npm ci` (root) → `npm run typecheck --workspace=matcher` → `npm run lint --workspace=matcher` → `npm run test --workspace=matcher` (205 tests) |
+| `matcher` | Download the artifact → `npm ci` (root) → `npm run typecheck --workspace=matcher` → `npm run lint --workspace=matcher` → `npm run test --workspace=matcher` (213 tests) |
 | `web` | Download the artifact → `npm ci` (in `web/`) → `npm run typecheck` → `npm run lint` → `npm run test` (19 tests) → `npm run build` (production Next.js build) |
 
 A compilation failure, a type error, a lint violation, a failing test, or a
@@ -1216,7 +1233,7 @@ can land before public disclosure.
 | P3-1 | `settle`/`expireOrder` place no bound on `expiresAt` — a wallet can commit to an order that never expires or expires immediately. Only affects the order's own owner. | Accepted — flagged for wallet-side input validation. |
 | P3-2 | Commitment/blinding-factor hygiene is unenforceable on-chain — a buggy or malicious wallet that reuses a blinding factor across two orders with identical contents produces linkable commitments. | Accepted — a wallet-implementation requirement, not fixable in-contract. |
 | P3-3 | `getOrder` costs a full transaction for a public read that's available for free from the indexer. | Informational — `getOrder` is a scoped deliverable; the frontend should prefer the indexer for reads. |
-| P3-4 | PPM protocol-liquidity fills only support the BUY side; a resting SELL order never receives a protocol fill, only a user counterparty. | **Accepted, explicit MVP decision, not a bug** — see ["Proactive Market Maker (PPM)"](#proactive-market-maker-ppm). Requires a secure multi-asset custody/escrow leg to close; tracked in ["Roadmap"](#roadmap). |
+| P3-4 | PPM protocol-liquidity fills (both BUY and SELL) require the order's own wallet to submit the final `settleWithProtocol` call — the Matcher can no longer auto-execute a fill the way it once did for BUY alone. | **Architectural consequence of the fix, not a bug** — see ["Proactive Market Maker (PPM)"](#proactive-market-maker-ppm) and the web app's "Approve Settlement" UI (`hooks/use-order-actions.ts`). |
 | P3-5 | `AUDIT.md`'s independent security review predates the Treasury/PPM module and does not cover `depositTreasury`/`withdrawTreasury`/`reserveLiquidity`/`releaseLiquidity`/`releaseExpiredLiquidity`/`settleWithProtocol`/`addAdmin`/`removeAdmin`. | Informational — see the Treasury/PPM trust model above for that module's own (unaudited) design rationale; a follow-up audit pass covering it is tracked in ["Roadmap"](#roadmap). |
 
 ## Performance

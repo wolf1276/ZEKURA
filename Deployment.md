@@ -13,16 +13,101 @@ deployed contract build.
 | Network | Contract Address | Deployer | Deployed | Verified |
 |---|---|---|---|---|
 | **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` | `mn_addr_preview133whwmeuxs6zs5r0n6ad2sse6q076mk8lggq3y7pl8h4vsywp7zqgwjzmf` | 2026-07-15 | ✅ 2026-07-16 (`npm run test:e2e`, re-confirmed in the Level 4 pass below) |
-| **Preprod (exchange)** | `20f760d5e29cd868a2d7a25872e71cb042d8f68130e932a13e5111e5136d05c9` | `mn_addr_preprod1hwlanukqjw39mcm26wrnc5t2t62zgmy0p526zlx3pjsfmglegm2q3pgn0c` | 2026-07-17 | ✅ Live, verified 2026-07-19 by a direct read-only indexer query of the deployed ledger (not just code review): `treasuryBalances` has one real entry (NIGHT, 1000), `treasuryHistory` has 7 real rows (deposit/withdraw/reserve/release, all NIGHT), 6 real orders, 2 open reservations. This superseded `831aa0d2c2b49286f0736bb6f60b0d8b90aa09e043930e5182a129428a456734` (a since-abandoned earlier deploy from a different deployer wallet that this table previously — and incorrectly — listed as current; that address has no confirmed live state and `web/.env.local`/`.midnight-state.json` never pointed at it). **Lesson recorded, not just fixed:** this table and README's had drifted from `.midnight-state.json`/`.midnight-tzkr.json` (the real, git-ignored source of truth the deploy scripts write) for two days without being caught — always cross-check a hand-maintained address table against those JSON files or a live indexer read, never trust it alone. |
-| **Preprod (tZKR token)** | `b16fbbec8ed99e38b16aa56166a646a1c71fd4a8e902fd0e357825d9a59efea4` | same deployer as above | 2026-07-17 | ⚠️ Deployed and wired as `TZKR_ASSET_ID` in `web/src/lib/mock/market.ts`, but **confirmed by the same 2026-07-19 live indexer read that it has never actually moved through Treasury** — `treasuryBalances`/`treasuryReserved`/`treasuryHistory` contain zero entries for any tZKR-derived key, only NIGHT. This supersedes `461009399dcd6e196376c3e8d470f8ba801a1d0d9262ead39a0684f500f85f89` (an earlier tZKR deploy this table previously listed; `.midnight-tzkr.json` shows it was redeployed again the same day). **Root cause is architectural, not a wiring gap — see "Architectural blocker: tZKR cannot be custodied by Treasury" below.** |
+| **Preprod (exchange)** | `f7080eee45c16db312e7b389dfb42963b30c7b3cd333292f689abf4e5973a949` | `mn_addr_preprod1hwlanukqjw39mcm26wrnc5t2t62zgmy0p526zlx3pjsfmglegm2q3pgn0c` | 2026-07-19 | ✅ Live. Real user↔user trade (`settle()`) and protocol-liquidity trade (`settleWithProtocol`, real NIGHT + real tZKR) both exercised and independently confirmed via direct ledger reads — see "Asset-color redesign redeploy" below. Supersedes `20f760d5e29cd868a2d7a25872e71cb042d8f68130e932a13e5111e5136d05c9` (the pre-redesign build — `OrderDetails.asset` was still an `Either<Bytes32,Bytes32>` hashed via `deriveAssetKey`). |
+| **Preprod (tZKR token)** | `ee51fd584a48884b264adaf2fef0f5c00098084404e52cb9f5fd7e079d9c250c` | same deployer as above | 2026-07-19 | ✅ Live. Real minted unshielded color `5698abe70f5108b2b7607846049c4bf9890f50868686823b3fc8342f230a2760`, 1,000,000 tZKR minted, 100,000 deposited into the Exchange Treasury and independently confirmed to move via a real `settleWithProtocol` fill (Treasury tZKR balance decreased by exactly the filled amount, NIGHT balance increased by exactly `amount * price`). Supersedes `b16fbbec8ed99e38b16aa56166a646a1c71fd4a8e902fd0e357825d9a59efea4` (the OpenZeppelin `FungibleToken`-based build — see "Architectural blocker: tZKR cannot be custodied by Treasury", now resolved). |
 | Undeployed (local devnet) | not persistent — redeploy via `npm run setup` | genesis seed | — | n/a |
 
-**Preview is now significantly stale** — it still runs the pre-Treasury 5-circuit build from 2026-07-15, with none of the Treasury/PPM/NIGHT-payment-leg/tZKR work below. Out of scope for this pass (Preprod-only per the operator's brief).
+**Preview is now significantly stale** — it still runs the pre-Treasury 5-circuit build from 2026-07-15, with none of the Treasury/PPM/NIGHT-payment-leg/tZKR/asset-redesign work below. Out of scope for this pass (Preprod-only, matching every prior pass in this file).
 
-`web/.env.local` (created this pass — it did not previously exist in this
-checkout) points `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREPROD` at the new
-exchange address above; `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREVIEW` is
-left blank (unchanged — no Preview redeploy happened this pass).
+`web/.env.local` points `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREPROD` at
+the current exchange address above; `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREVIEW`
+is left blank (unchanged — no Preview redeploy has happened yet).
+
+---
+
+## Asset-color redesign redeploy — 2026-07-19
+
+Closes the architectural blocker recorded below ("tZKR cannot be custodied
+by Treasury") and lands the `settleWithProtocol` owner-authorization fix
+(commit `03ecfd4`, which had been implemented but never redeployed — its
+own commit message flagged "no funds available in this session to
+redeploy Preprod").
+
+**What changed:**
+1. `contracts/tzkr-token.compact` rebuilt as a genuine unshielded token
+   (`mintUnshieldedToken`), replacing the OpenZeppelin Compact
+   `FungibleToken` composition. New contract, new address, new color — the
+   old deployment held no real Treasury balance to migrate (confirmed by
+   the read-only query that discovered the blocker).
+2. `contracts/exchange.compact`'s `OrderDetails.asset` simplified from
+   `Either<Bytes32,Bytes32>` to a plain `Bytes<32>` (the real color
+   directly), removing `deriveAssetKey` entirely. Verifier-key-changing —
+   same class of change as the P0 audit fix and the NIGHT-payment-leg
+   addition, so this redeploy also carries the (never-before-deployed)
+   `settleWithProtocol` owner-authorization fix.
+3. Matcher and web both updated to treat `Asset`/`MatcherAsset` as a plain
+   hex string end to end — no more `toOnChainAssetKey`/`deriveAssetKey`
+   mapping anywhere in either codebase.
+4. The web app's missing "Approve Settlement" UI (flagged as remaining
+   work in commit `03ecfd4`) was built this pass: the Orders page now
+   shows an "Approve Settlement" button for any of the profile's own
+   orders with a pending PPM quote, wired through a new
+   `order.ppm_quote_ready` WS message and a local pending-settlements
+   store (`web/src/services/midnight/pendingSettlements.ts`).
+
+**Deploy:** same staged-deploy process as the "Post-Treasury staged
+redeploy" entry below (12 circuits still exceed Preprod's per-transaction
+block-weight limit) — `scripts/deploy-staged.ts` with a freshly regenerated
+stage-1 reduced build (ledger layout diffed byte-identical against the
+full build before deploying, same discipline as last time). All 9
+transactions (1 deploy + 8 verifier-key inserts) succeeded on the first
+attempt. tZKR deployed via `npm run deploy:tzkr` + `npm run mint:tzkr`
+(1,000,000 tZKR minted to the deployer wallet).
+
+**Treasury seeded** via the new `scripts/seed-treasury.ts`: real
+`depositTreasury` transactions for 1,000,000 NIGHT and 100,000 tZKR,
+confirmed by both the transaction results and a follow-up ledger read.
+
+**Live end-to-end trade validation** (`scripts/e2e-trade-check.ts`, two
+passes against the redeployed contract):
+1. **User↔user**: two real `createOrder()` calls (BUY @1000, SELL @900,
+   the real tZKR color, distinct owner secrets) followed by a real
+   `settle()` — both orders independently confirmed `FILLED` via a direct
+   ledger read.
+2. **Protocol-liquidity**: `createOrder()` (resting BUY, no counterparty)
+   → `reserveLiquidity()` → `settleWithProtocol()` (this script acting as
+   the order's own owner, exactly the "Approve Settlement" step the new
+   UI submits) — Treasury tZKR balance decreased by exactly the filled
+   amount (100 units) and NIGHT balance increased by exactly
+   `amount * price` (100 × 950 = 95,000), both confirmed via a direct
+   ledger read before/after.
+
+**Live Matcher REST validation** (`scripts/e2e-matcher-order-check.ts`,
+against a real running Matcher instance pointed at the redeployed
+contract): a real on-chain `createOrder()` (real tZKR color) POSTed to
+`/orders` was accepted, confirmed via `GET /orders/:id` (status `OPEN`)
+and `GET /orderbook` (the correct resting level at the right price) — the
+Matcher's own REST path, not a bespoke script bypassing it. `/health`,
+`/treasury/balance` (both NIGHT and tZKR keys), `/ppm/status`, and a raw
+WebSocket handshake to `/ws` (HTTP 101) were also confirmed live.
+
+### Known limitations after this pass
+
+- **No literal browser + wallet-extension click-through** of the new
+  Approve Settlement UI — unchanged limitation from every prior entry in
+  this file (no wallet extension available in this automated
+  environment). The underlying `settleWithProtocol` call it submits was
+  independently verified live by `e2e-trade-check.ts`'s Pass 2, and the
+  UI code was reviewed in full (see the "Approve Settlement" commit).
+- **Preview was not redeployed** (out of scope, Preprod-only, matching
+  every prior pass in this file) and remains on the pre-Treasury
+  5-circuit build.
+- One harmless resting test order (`03d4af5f...`, SELL 25 tZKR @1200,
+  far-future expiry) was left `OPEN` on-chain by the Matcher REST
+  validation pass above — real, not synthetic, data; it costs nothing
+  ongoing and does not affect Treasury or any other order, but its
+  randomly-generated owner secret was not persisted, so it can never be
+  cancelled. Documented here rather than silently left unexplained.
 
 ---
 
@@ -67,22 +152,21 @@ Treasury reads in `tests/treasury.test.ts`'s `readBalance`/`readReserved`/
 web's 19 tests pass after the change; typecheck/lint clean across all three
 packages.
 
-### Known limitations (not yet fixed)
+### Known limitations (not yet fixed as of this entry — all three closed 2026-07-19, see "Asset-color redesign redeploy" above)
 
-1. **No frontend path submits `settleWithProtocol`.** `web/` has zero
-   references to it or to `pendingProtocolQuote` — a PPM fill (BUY or SELL)
-   reserves on-chain liquidity via the Matcher and then stalls; nothing in
-   the shipped UI ever finishes the trade. User-user `settle()` fills
-   (Matcher's own operator wallet) are unaffected. See the conversation's
-   payment-leg audit for the full trace.
-2. **tZKR is deployed and minted but not wired as a tradable asset.** No
-   asset-registry mapping connects tZKR's real contract address to the
-   matcher's `toOnChainAssetKey`/web's `DEFAULT_PAIR` — the tNIGHT/tZKR pair
-   currently shown in the UI is mock/display data only.
-3. **The redeployed exchange contract has not had a live on-chain trade
-   verified against it this session** (no Matcher was started against the
-   new address) — only typecheck/lint/test-suite verification and the
-   deploy transaction itself are confirmed.
+1. ~~**No frontend path submits `settleWithProtocol`.**~~ **Closed** — the
+   "Approve Settlement" UI now submits it from the order owner's own
+   wallet (`hooks/use-order-actions.ts`, Orders page).
+2. ~~**tZKR is deployed and minted but not wired as a tradable asset.**~~
+   **Closed** — tZKR was rebuilt as a genuine unshielded token (the
+   OpenZeppelin-based design in this entry could never be custodied by
+   Treasury regardless of wiring — see "Architectural blocker: tZKR cannot
+   be custodied by Treasury" below) and its real minted color is now
+   `ASSET_PAIRS`' `quoteAssetId` in `web/src/lib/mock/market.ts`.
+3. ~~**The redeployed exchange contract has not had a live on-chain trade
+   verified against it this session.**~~ **Closed** — see
+   `scripts/e2e-trade-check.ts` and `scripts/e2e-matcher-order-check.ts` in
+   "Asset-color redesign redeploy" above.
 
 ---
 

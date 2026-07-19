@@ -7,7 +7,7 @@ Base URL: `http://<host>:<port>` (defaults `0.0.0.0:4000`, see README.md). All b
 ```jsonc
 {
   "id": "64 lowercase hex chars",           // Bytes<32> orderId
-  "asset": { "isLeft": true, "left": "64 hex", "right": "64 hex" }, // Either<Bytes<32>,Bytes<32>>
+  "asset": "64 hex chars",                  // the traded (non-NIGHT) asset's real unshielded token color — a plain Bytes<32>, identical to the Treasury's own assetKey
   "side": "BUY" | "SELL",
   "price": "1000",                          // decimal string
   "amount": "50",                           // decimal string
@@ -15,7 +15,8 @@ Base URL: `http://<host>:<port>` (defaults `0.0.0.0:4000`, see README.md). All b
   "ownerId": "64 hex",                      // deriveOwnerId(ownerSecretKey()) — never the secret itself
   "status": "OPEN" | "MATCHED" | "SETTLING" | "FILLED" | "CANCELLED" | "EXPIRED" | "FAILED",
   "createdAt": 1700000000000,               // Matcher-local receipt time, unix ms
-  "expiresAt": "9999999999"                 // decimal string, unix seconds
+  "expiresAt": "9999999999",                // decimal string, unix seconds
+  "payoutAddress": "64 hex chars" | null    // real unshielded UserAddress, opt-in — required only for PPM protocol-liquidity eligibility (see settleWithProtocol below); null means user-vs-user matching only
 }
 ```
 
@@ -30,14 +31,15 @@ Discloses a fully-signed order to the Matcher. The order's on-chain `createOrder
 ```jsonc
 {
   "id": "64 hex",
-  "asset": { "isLeft": true, "left": "64 hex", "right": "64 hex" },
+  "asset": "64 hex chars",
   "side": "BUY",
   "price": "1000",
   "amount": "50",
   "commitment": "64 hex",
   "ownerId": "64 hex",
   "signature": "64 hex",       // the order's blinding factor — see ARCHITECTURE.md's security model
-  "expiresAt": "9999999999"
+  "expiresAt": "9999999999",
+  "payoutAddress": "64 hex chars" // optional — see Order object above
 }
 ```
 
@@ -46,7 +48,9 @@ Discloses a fully-signed order to the Matcher. The order's on-chain `createOrder
 ```jsonc
 {
   "order": { /* Order object, status OPEN or MATCHED */ },
-  "match": null // or { id, buyOrderId, sellOrderId, asset, price, amount, matchedAt } if it matched immediately
+  "match": null, // or { id, buyOrderId, sellOrderId, asset, price, amount, matchedAt } if a user counterparty matched immediately
+  "protocolFill": null, // reserved for a future synchronous protocol fill — always null today (PPM fills stop at reservation, see pendingProtocolQuote)
+  "pendingProtocolQuote": null // or { quoteId, price, amount, expiresAt } if no user counterparty existed and the PPM reserved liquidity — the order stays OPEN until its own owner submits settleWithProtocol (the "Approve Settlement" step; see ARCHITECTURE.md and web's Orders page). The same event is also broadcast as order.ppm_quote_ready below, for any other session that owns this order.
 }
 ```
 
@@ -84,13 +88,13 @@ Removes the order from the Matcher's book/DB (`OPEN -> CANCELLED`) — **does no
 
 Live snapshot of resting `OPEN` orders for one asset, aggregated by price level (one order's `amount` is added to any other resting order at the same price). This is a snapshot only — after the initial fetch, a client is expected to keep it current itself from the `order.created`/`order.cancelled`/`order.expired`/`order.matched` WS events below (each carries the full order, including `side`/`price`/`amount`), rather than repolling. There is no separate orderbook WS message type.
 
-**Query:** `isLeft` (`"true"` or `"false"`), `left`, `right` (64 hex chars each — the `Asset` tuple).
+**Query:** `asset` (64 hex chars — the traded asset's real unshielded token color, same value as the Order object's `asset` field).
 
 **`200 OK`:**
 
 ```jsonc
 {
-  "asset": { "isLeft": true, "left": "64 hex", "right": "64 hex" },
+  "asset": "64 hex chars",
   "bids": [{ "price": "900", "amount": "15", "orderCount": 2 }],  // highest price first
   "asks": [{ "price": "1200", "amount": "20", "orderCount": 1 }]  // lowest price first
 }
@@ -102,12 +106,12 @@ Live snapshot of resting `OPEN` orders for one asset, aggregated by price level 
 
 Recent trades (fills) for one asset, newest first — each is a persisted `Match`. Same "fetch once, then live-update from WS" pattern as `/orderbook`: keep the tape current from `order.matched` events for that asset.
 
-**Query:** `isLeft`, `left`, `right` (as above), `limit` (optional, default `50`, `1`-`500`).
+**Query:** `asset` (as above), `limit` (optional, default `50`, `1`-`500`).
 
 **`200 OK`:**
 
 ```jsonc
-{ "trades": [{ "id": "...", "asset": {...}, "price": "1100", "amount": "5", "matchedAt": 1700000002000 }] }
+{ "trades": [{ "id": "...", "asset": "64 hex chars", "price": "1100", "amount": "5", "matchedAt": 1700000002000 }] }
 ```
 
 **Errors:** `400 validation_failed`.
@@ -116,13 +120,13 @@ Recent trades (fills) for one asset, newest first — each is a persisted `Match
 
 Rolling-window stats for one asset, computed on read from persisted matches — there is no separate candle/history table, so this always reflects exactly the trades within the window (default 24h) as of the request.
 
-**Query:** `isLeft`, `left`, `right` (as above), `windowMs` (optional, default `86400000` [24h], capped at 7 days).
+**Query:** `asset` (as above), `windowMs` (optional, default `86400000` [24h], capped at 7 days).
 
 **`200 OK`:**
 
 ```jsonc
 {
-  "asset": { "isLeft": true, "left": "64 hex", "right": "64 hex" },
+  "asset": "64 hex chars",
   "lastPrice": "1100",     // most recent trade's price in the window, or null if none
   "openPrice": "1000",     // earliest trade's price in the window, or null if none
   "high": "1100",
@@ -158,6 +162,7 @@ Connect with any WebSocket client. Every message is:
 | `order.failed` | `{ match, reason }` | Settlement permanently failed (state diverged, or retries exhausted) |
 | `order.cancelled` | Order | `DELETE /orders/:id` succeeded |
 | `order.expired` | Order | An order was lazily found past its `expiresAt` |
+| `order.ppm_quote_ready` | `{ orderId, quoteId, assetKey, side, amount, price, expiresAt }` | The PPM reserved liquidity against a resting order but did not settle it — the order's own owner (any session that holds its witnesses, e.g. a second tab) should surface the "Approve Settlement" step. The submitting session also gets this synchronously via `POST /orders`' `pendingProtocolQuote`. |
 
 ## Error body shape
 
