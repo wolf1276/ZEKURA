@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getPpmStatus, getTreasuryBalance, getTreasuryHistory } from "@/services/matcher/api";
 import { matcher } from "@/services/matcher/matcherClient";
 import { nativeAssetKeyHex } from "@/lib/nativeAsset";
+import { TZKR_ASSET_ID } from "@/lib/mock/market";
 import type { MatcherPpmStatus, MatcherTreasuryBalance, MatcherTreasuryEvent } from "@/types/matcher";
 
 const HISTORY_LIMIT = 50;
@@ -12,6 +13,8 @@ const REFRESH_MS = 30_000;
 export interface TreasuryState {
   balance: MatcherTreasuryBalance | null;
   ppmStatus: MatcherPpmStatus | null;
+  /** Same shape as `balance`, but for tZKR — the Treasury custodies both real assets, not just native tNIGHT. */
+  tzkrBalance: MatcherTreasuryBalance | null;
   history: MatcherTreasuryEvent[];
   loading: boolean;
   error: string | null;
@@ -29,6 +32,7 @@ export function useTreasury(): TreasuryState & { refresh: () => void } {
   const [state, setState] = useState<TreasuryState>({
     balance: null,
     ppmStatus: null,
+    tzkrBalance: null,
     history: [],
     loading: true,
     error: null,
@@ -37,12 +41,13 @@ export function useTreasury(): TreasuryState & { refresh: () => void } {
   const load = useCallback(async () => {
     try {
       const assetKey = nativeAssetKeyHex();
-      const [balance, ppmStatus, historyResponse] = await Promise.all([
+      const [balance, ppmStatus, tzkrBalance, historyResponse] = await Promise.all([
         getTreasuryBalance(assetKey),
         getPpmStatus(assetKey),
+        getTreasuryBalance(TZKR_ASSET_ID),
         getTreasuryHistory(HISTORY_LIMIT),
       ]);
-      setState({ balance, ppmStatus, history: historyResponse.events, loading: false, error: null });
+      setState({ balance, ppmStatus, tzkrBalance, history: historyResponse.events, loading: false, error: null });
     } catch (err) {
       setState((prev) => ({
         ...prev,

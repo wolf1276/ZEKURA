@@ -19,7 +19,7 @@ import { OrderStatusBadge } from "@/components/trade/order-status-badge";
 import { useWallet } from "@/wallet/walletHooks";
 import { useTreasury } from "@/hooks/use-treasury";
 import { matcher, fetchTreasuryActivityBackfill } from "@/services/matcher/matcherClient";
-import { ASSET_PAIRS } from "@/lib/mock/market";
+import { ASSET_PAIRS, TZKR_ASSET_ID } from "@/lib/mock/market";
 import {
   formatAmount,
   formatOrderId,
@@ -58,7 +58,9 @@ const ACTIVITY_LABEL: Record<ActivityEvent["kind"], string> = {
 };
 
 function tokenLabel(key: string): string {
-  return key === NATIVE_TOKEN ? "tNIGHT" : `${key.slice(0, 6)}…`;
+  if (key === NATIVE_TOKEN) return "tNIGHT";
+  if (key === TZKR_ASSET_ID) return "tZKR";
+  return `${key.slice(0, 6)}…`;
 }
 
 function Card({

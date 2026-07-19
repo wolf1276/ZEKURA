@@ -95,7 +95,7 @@ function HistoryList({ title, events }: { title: string; events: Array<{ kind: M
 export function TreasuryPage() {
   const { wallet } = useWallet();
   const { isAdminAddress, signAdminRequest } = useAdminAuth();
-  const { balance, ppmStatus, history, loading, refresh } = useTreasury();
+  const { balance, ppmStatus, tzkrBalance, history, loading, refresh } = useTreasury();
 
   const [depositAmount, setDepositAmount] = useState("");
   const [withdrawAmount, setWithdrawAmount] = useState("");
@@ -105,6 +105,9 @@ export function TreasuryPage() {
   const balanceDisplay = balance ? toDisplay(balance.balance) : 0;
   const availableDisplay = balance ? toDisplay(balance.available) : 0;
   const reservedDisplay = balance ? toDisplay(balance.reserved) : 0;
+  const tzkrBalanceDisplay = tzkrBalance ? toDisplay(tzkrBalance.balance) : 0;
+  const tzkrAvailableDisplay = tzkrBalance ? toDisplay(tzkrBalance.available) : 0;
+  const tzkrReservedDisplay = tzkrBalance ? toDisplay(tzkrBalance.reserved) : 0;
   const utilizationPct = balance && Number(balance.balance) > 0 ? (Number(balance.reserved) / Number(balance.balance)) * 100 : 0;
   const isEmpty = !loading && balanceDisplay === 0;
   const risk = riskLabel(ppmStatus?.riskStatus ?? "empty");
@@ -173,6 +176,12 @@ export function TreasuryPage() {
           value={<span className={risk.className}>{risk.label}</span>}
           icon={<AlertTriangle className="size-3.5" />}
         />
+      </div>
+
+      <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <KpiCard label="tZKR Treasury Balance" value={`${formatAmount(tzkrBalanceDisplay, 4)} tZKR`} icon={<Wallet className="size-3.5" />} />
+        <KpiCard label="tZKR Available Liquidity" value={`${formatAmount(tzkrAvailableDisplay, 4)} tZKR`} icon={<Droplets className="size-3.5" />} />
+        <KpiCard label="tZKR Reserved Liquidity" value={`${formatAmount(tzkrReservedDisplay, 4)} tZKR`} icon={<Shield className="size-3.5" />} />
       </div>
 
       {isAdminAddress && (

@@ -59,33 +59,33 @@ None. The `npm run setup -- --network preprod` path is unchanged.
 
 ## Treasury Status
 
-**The new Exchange treasury has NOT yet been seeded.**
+**Seeded.** The new Exchange treasury (`f9f29d13…c8f`) holds **2,000,000 tNIGHT** and **100,000 tZKR**, verified via a real on-chain `depositTreasury → reserveLiquidity → releaseLiquidity → withdrawTreasury` cycle plus a real `settle()` fill and a real `settleWithProtocol` PPM fill.
 
 **Old Exchange treasury** (`f7080eee45c16db312e7b389dfb42963b30c7b3cd333292f689abf4e5973a949`) still contains ~1,000,000 NIGHT and ~100,000 tZKR.
 
 Those funds belong to the **superseded deployment**. They are not recoverable without the old deployer's admin key — and even then, only via `withdrawTreasury` on the old contract (which still exists on-chain).
 
-**New deployment starts empty.** Treasury seeding is the next required production step after deployment is confirmed live and address references are updated.
-
 ---
 
 ## Remaining Tasks
 
-- [ ] Redeploy Exchange contract (`npm run setup -- --network preprod`)
-- [ ] Update address references (Dockerfile.matcher, README.md, Deployment.md, web/.env.local)
-- [ ] **Seed Treasury** (NIGHT + tZKR deposit)
-- [ ] Execute BUY order
-- [ ] Execute SELL order
-- [ ] Verify reservation lifecycle
-- [ ] Verify settlement
-- [ ] Verify treasury balances
-- [ ] Verify execution journal (treasuryHistory)
-- [ ] Verify matcher reconciliation
+- [x] Redeploy Exchange contract (`npm run setup -- --network preprod`)
+- [x] Update address references (Dockerfile.matcher, README.md, Deployment.md, web/.env.local)
+- [x] **Seed Treasury** (NIGHT + tZKR deposit)
+- [x] Execute BUY order
+- [x] Execute SELL order
+- [x] Verify reservation lifecycle
+- [x] Verify settlement
+- [x] Verify treasury balances
+- [x] Verify execution journal (treasuryHistory)
+- [x] Verify matcher reconciliation
 - [ ] Verify frontend displays new data
-- [ ] Update RELEASE_CANDIDATE_REPORT.md (mark S1 resolved, update scores, add new address)
-- [ ] Commit
-- [ ] Tag release
-- [ ] Push
+- [x] Update RELEASE_CANDIDATE_REPORT.md (mark S1 resolved, update scores, add new address)
+- [x] Commit
+- [x] Tag release
+- [x] Push
+
+Only remaining item: frontend visual verification (web app pointed at the new Preprod address hasn't been manually checked in-browser).
 
 ---
 
