@@ -270,6 +270,7 @@ async function main() {
         return call('settleWithProtocol', orderId, quoteId, recipient);
       },
       ledger: () => ledger(ctx.currentQueryContext.state),
+      rawState: () => ctx.currentQueryContext.state,
     };
   }
 
@@ -380,6 +381,15 @@ async function main() {
     );
   });
 
+  test('reserveLiquidity: rejects a non-admin caller (S1 fix — griefing/liquidity-lock guard)', () => {
+    const c = makeContract(OTHER_SECRET_HEX);
+    assertThrows(
+      () => c.reserveLiquidity(bytes32(0x11), ASSET_A, 100n, 1_000n, 9_999_999_999n),
+      'Caller is not an authorized administrator',
+      'non-admin reserveLiquidity',
+    );
+  });
+
   test('reserveLiquidity: succeeds within available balance and moves treasuryReserved', () => {
     const c = makeContract();
     c.depositTreasury(ASSET_A, 1_000n);
@@ -418,6 +428,15 @@ async function main() {
     c.reserveLiquidity(bytes32(0x07), ASSET_A, 300n, 1_000n, 9_999_999_999n);
     c.releaseLiquidity(bytes32(0x07));
     assertThrows(() => c.releaseLiquidity(bytes32(0x07)), 'Reservation is not open', 'double release');
+  });
+
+  test('releaseLiquidity: rejects a non-admin caller (S1 fix — front-running/griefing guard)', () => {
+    const attacker = makeContract(OTHER_SECRET_HEX);
+    assertThrows(
+      () => attacker.releaseLiquidity(bytes32(0x12)),
+      'Caller is not an authorized administrator',
+      'non-admin releaseLiquidity',
+    );
   });
 
   // ── Reservation expiry ─────────────────────────────────────────────────

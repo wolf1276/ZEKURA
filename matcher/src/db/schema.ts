@@ -28,14 +28,13 @@ CREATE TABLE IF NOT EXISTS orders (
   status        TEXT NOT NULL CHECK (status IN ('OPEN', 'MATCHED', 'SETTLING', 'FILLED', 'CANCELLED', 'EXPIRED', 'FAILED')),
   created_at    INTEGER NOT NULL,
   expires_at    TEXT NOT NULL,
-  -- Optional real unshielded UserAddress (Bytes<32> hex) the order's owner
-  -- supplies for protocol-liquidity payouts only (settleWithProtocol's BUY
-  -- branch — see ppm/TreasuryClient.ts). OrderDetails.owner is a
-  -- pseudonymous ZswapCoinPublicKey-shaped hash, not a real spendable
-  -- address, so there's no on-chain binding between it and this field — an
-  -- order with no payout_address simply can't be filled by the PPM (never
-  -- settle()'d against another user order either; that path is unaffected
-  -- and needs no address at all, since settle() moves no tokens).
+  -- Optional real unshielded UserAddress (Bytes<32> hex), stored for API
+  -- shape compatibility. OrderDetails.owner is a pseudonymous
+  -- ZswapCoinPublicKey-shaped hash, not a real spendable address, so there's
+  -- no on-chain binding between it and this field. Not currently read by
+  -- ppm/PPMService.ts as a PPM-eligibility gate — settleWithProtocol is
+  -- submitted by the order owner's own wallet, which decides the real
+  -- payout recipient at submission time (see types/Order.ts).
   payout_address TEXT
 );
 

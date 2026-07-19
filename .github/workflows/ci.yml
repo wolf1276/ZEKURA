@@ -9,10 +9,10 @@ env:
   COMPACT_VERSION: '0.31.1'
 
 jobs:
-  # Compiles contracts/exchange.compact once and shares the output with every
-  # downstream job — root, matcher, and web all statically import types from
-  # contracts/managed/exchange/contract/index.js, so none of them can
-  # typecheck, test, or build without it.
+  # Compiles both contracts once and shares the output with every downstream
+  # job — root, matcher, and web all statically import types from
+  # contracts/managed/exchange/contract/index.js, and the root test suite
+  # (tests/tzkr-token.test.ts) also needs contracts/managed/tzkr-token/.
   compile-contract:
     runs-on: ubuntu-latest
     steps:
@@ -26,13 +26,18 @@ jobs:
       - name: Pin Compact compiler version
         run: compact update "$COMPACT_VERSION"
 
-      - name: Compile contract
+      - name: Compile exchange contract
         run: compact compile contracts/exchange.compact contracts/managed/exchange
+
+      - name: Compile tZKR token contract
+        run: compact compile contracts/tzkr-token.compact contracts/managed/tzkr-token
 
       - uses: actions/upload-artifact@v4
         with:
           name: compiled-contract
-          path: contracts/managed/exchange
+          path: |
+            contracts/managed/exchange
+            contracts/managed/tzkr-token
           retention-days: 1
 
   # Root package: typecheck + the hand-rolled contract test suite
@@ -50,7 +55,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: compiled-contract
-          path: contracts/managed/exchange
+          path: contracts/managed
 
       - name: Install root + matcher workspace dependencies
         run: npm ci
@@ -75,7 +80,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: compiled-contract
-          path: contracts/managed/exchange
+          path: contracts/managed
 
       - name: Install root + matcher workspace dependencies
         run: npm ci
@@ -103,7 +108,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: compiled-contract
-          path: contracts/managed/exchange
+          path: contracts/managed
 
       # The compiled contract at contracts/managed/exchange/contract/index.js lives
       # outside web/, so its own `import '@midnight-ntwrk/compact-runtime'` resolves

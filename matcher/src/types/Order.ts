@@ -30,11 +30,13 @@ export interface Order {
   readonly expiresAt: bigint;
   /**
    * Real unshielded UserAddress (Bytes<32> hex), optionally supplied by the
-   * order's owner for protocol-liquidity payouts only — see
-   * ppm/TreasuryClient.ts and db/schema.ts's comment on why this can't be
-   * bound on-chain to OrderDetails.owner. null means this order can never be
-   * filled by the PPM (it can still match/settle against another user order
-   * normally, which needs no address at all).
+   * order's owner — see db/schema.ts's comment on why this can't be bound
+   * on-chain to OrderDetails.owner. Accepted and stored, but PPMService's
+   * attemptFill does not currently branch on it: since settleWithProtocol
+   * must be submitted by the order owner's own wallet (not the Matcher —
+   * see README's PPM section), the actual payout recipient is decided by
+   * that submission, not by this field. Kept for API-shape compatibility;
+   * not an active PPM-eligibility gate.
    */
   readonly payoutAddress?: Hex32 | null;
 }

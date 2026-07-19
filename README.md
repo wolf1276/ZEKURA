@@ -71,7 +71,7 @@ order's actual live ledger record and shows it side by side with the order's
 real private fields, so the public/private split is something you can click
 and confirm.
 
-Zekura is a full production candidate, not a demo: **284 automated tests**
+Zekura is a full production candidate, not a demo: **300 automated tests**
 across all three tiers, an independent security audit with one P0 finding
 found and fixed (see [`AUDIT.md`](./AUDIT.md)), and live deployments
 exercised end to end — including real settlement, real Treasury-backed
@@ -124,7 +124,7 @@ doesn't exist. What *is* live today:
 |---|---|
 | Source code | [github.com/wolf1276/ZEKURA](https://github.com/wolf1276/ZEKURA) |
 | Preview contract (Midnight testnet) | [`7e6fb224…52984`](https://preview.midnightexplorer.com/) on [Preview explorer](https://preview.midnightexplorer.com/) |
-| Preprod contract (Midnight testnet, default network) | [`7d1f1f67…7eb9d1`](https://preprod.midnightexplorer.com/) on [Preprod explorer](https://preprod.midnightexplorer.com/) |
+| Preprod contract (Midnight testnet, default network) | [`f7080eee…73a949`](https://preprod.midnightexplorer.com/) on [Preprod explorer](https://preprod.midnightexplorer.com/) |
 | Security audit | [`AUDIT.md`](./AUDIT.md) |
 | Deployment & live-verification record | [`Deployment.md`](./Deployment.md) |
 | X (Twitter) | [@zekuraprotcol](https://x.com/zekuraprotcol) |
@@ -633,7 +633,8 @@ zekura/
 │   └── sync-retry.ts              # Wraps a command with sync-retry semantics
 ├── tests/
 │   ├── exchange.test.ts           # Order registry + settlement test suite (34 tests) — drives compiled circuits directly
-│   └── treasury.test.ts           # Treasury/PPM circuit test suite (26 tests) — deposit/withdraw/reserve/release/settleWithProtocol
+│   ├── treasury.test.ts           # Treasury/PPM circuit test suite (28 tests) — deposit/withdraw/reserve/release/settleWithProtocol
+│   └── tzkr-token.test.ts         # tZKR mint authorization + color-stability test suite (6 tests)
 ├── docs/screenshots/              # README screenshots
 ├── docker-compose.yml            # Local devnet: node, indexer, proof server
 ├── AUDIT.md                       # Full security audit of the contract
@@ -1302,7 +1303,7 @@ already flag as open work — not speculative feature ideas.
 
 - **A literal wallet-extension click-through.** Every code path the demo
   flow exercises has been driven directly (same SDK calls, same providers)
-  or covered by the 284 automated tests, and the production build renders
+  or covered by the 300 automated tests, and the production build renders
   every route cleanly — but a real browser session with a funded 1AM/Lace
   wallet performing the actual approval pop-up flow has not yet been
   recorded (see [`Deployment.md`](./Deployment.md)'s "Not yet exercised" notes).

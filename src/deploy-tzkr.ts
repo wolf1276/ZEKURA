@@ -180,7 +180,13 @@ async function main() {
   // Register NIGHT for DUST generation (fees).
   console.log('─── DUST Token Setup ───────────────────────────────────────────\n');
   const dustState = await Rx.firstValueFrom(walletCtx.wallet.state().pipe(Rx.filter((s) => s.isSynced)));
-  const unregisteredUtxos = dustState.unshielded.availableCoins.filter((c: any) => !c.meta?.registeredForDustGeneration);
+  // Only NIGHT UTXOs are eligible for DUST generation — this wallet also
+  // holds tZKR (it mints/owns the token itself), and including a non-Night
+  // coin here makes the chain reject the registration tx outright with
+  // "Token of a non-Night type received".
+  const unregisteredUtxos = dustState.unshielded.availableCoins.filter(
+    (c: any) => !c.meta?.registeredForDustGeneration && c.utxo?.type === unshieldedToken().raw,
+  );
   if (unregisteredUtxos.length > 0) {
     console.log(`  Registering ${unregisteredUtxos.length} NIGHT UTXOs for DUST generation...`);
     const REGISTER_MAX_RETRIES = 5;

@@ -437,11 +437,14 @@ export circuit withdrawTreasury(
 // ---------------------------------------------------------------------------
 
 // Called by the Matcher's PPM component before quoting a fill against
-// protocol liquidity. Same trust level as settle() itself (no
-// caller-identity check — see AUDIT.md): the only thing that gates this is
-// the state machine and the actual available balance below, exactly the way
-// settle() is gated only by order commitments, not by who submits the
-// transaction.
+// protocol liquidity. Gated by requireAdmin() (S1 fix): the Matcher process
+// already holds an admin secret for depositTreasury/withdrawTreasury (see
+// buildExchangeWitnesses in matcher/src/settlement/SettlementClient.ts), so
+// this reuses that same already-disclosed identity rather than introducing a
+// new one — no new privacy leak, and no Matcher-side wiring change needed.
+// Without this, anyone could open an arbitrary reservation against real
+// Treasury balance with an unbounded expiresAt, tying up liquidity
+// indefinitely for no cost beyond gas.
 export circuit reserveLiquidity(
   quoteId: Bytes<32>,
   assetKey: Bytes<32>,
@@ -449,6 +452,7 @@ export circuit reserveLiquidity(
   price: Uint<128>,
   expiresAt: Uint<64>
 ): [] {
+  requireAdmin();
   const id = disclose(quoteId);
   const key = disclose(assetKey);
   const amt = disclose(amount);
@@ -478,9 +482,18 @@ export circuit reserveLiquidity(
 }
 
 // Un-reserves a still-open, still-unused hold — e.g. its order got cancelled,
-// or a user counterparty filled it first. Same no-caller-check trust level
-// as reserveLiquidity.
+// or a user counterparty filled it first. Gated by requireAdmin() (S1 fix,
+// same rationale as reserveLiquidity above): without this, anyone watching
+// the mempool for a pending settleWithProtocol could front-run it with
+// releaseLiquidity(quoteId), flipping the reservation to RELEASED and making
+// the real settlement revert ("Reservation is not open") — griefing every
+// PPM fill at trivial gas cost. releaseExpiredLiquidity below stays
+// permissionless on purpose: it's time-gated by blockTimeGte, so by the time
+// it's callable the reservation's quote has already expired and
+// settleWithProtocol against it would fail on its own "Quote has expired"
+// check regardless — there's nothing left to grief.
 export circuit releaseLiquidity(quoteId: Bytes<32>): [] {
+  requireAdmin();
   const id = disclose(quoteId);
   assert(reservations.member(id), "Reservation does not exist");
 

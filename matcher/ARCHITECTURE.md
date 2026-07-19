@@ -90,21 +90,21 @@ Removes the order from the Matcher's own book and DB only (`OPEN -> CANCELLED`) 
 ```
 orders                                  matches                          settlements
 ──────────────────────────              ──────────────────────           ──────────────────────
-id            TEXT PK                   id             TEXT PK           id           TEXT PK
-asset_is_left INTEGER                   buy_order_id   TEXT → orders.id  match_id     TEXT → matches.id
-asset_left    TEXT                      sell_order_id  TEXT → orders.id  status       PENDING|SUCCESS|FAILED
-asset_right   TEXT                      asset_key      TEXT              tx_id        TEXT (nullable)
-asset_key     TEXT   ── idx             price          TEXT              error        TEXT (nullable)
-side          BUY|SELL ── idx           amount         TEXT              attempts     INTEGER
-price         TEXT                      matched_at     INTEGER           created_at   INTEGER
-amount        TEXT                                                        updated_at   INTEGER
-commitment    TEXT
-owner_id      TEXT
-signature     TEXT                     Indexes: matches(buy_order_id), matches(sell_order_id),
-status        TEXT   ── idx             settlements(match_id), settlements(status)
-created_at    INTEGER ── idx
-expires_at    TEXT
+id             TEXT PK                  id             TEXT PK           id           TEXT PK
+asset_key      TEXT   ── idx            buy_order_id   TEXT → orders.id  match_id     TEXT → matches.id
+side           BUY|SELL ── idx          sell_order_id  TEXT → orders.id  status       PENDING|SUCCESS|FAILED
+price          TEXT                     asset_key      TEXT              tx_id        TEXT (nullable)
+amount         TEXT                     price          TEXT              error        TEXT (nullable)
+commitment     TEXT                     amount         TEXT              attempts     INTEGER
+owner_id       TEXT                     matched_at     INTEGER           created_at   INTEGER
+signature      TEXT                                                       updated_at   INTEGER
+status         TEXT   ── idx
+created_at     INTEGER ── idx           Indexes: matches(buy_order_id), matches(sell_order_id),
+expires_at     TEXT                     settlements(match_id), settlements(status)
+payout_address TEXT (nullable)
 ```
+
+`asset_key` is the order's real unshielded token color (a plain `Bytes<32>`, identical to `OrderDetails.asset` and the Treasury's own `assetKey`) — an earlier design split this across `asset_is_left`/`asset_left`/`asset_right` plus a separately-hashed `asset_key` column; one column now suffices for both roles (see `db/schema.ts`). `payout_address` is accepted and stored but not currently read as a PPM-eligibility gate — see `db/schema.ts`'s comment.
 
 `price`/`amount`/`expires_at` are `TEXT` (decimal strings), not `INTEGER` — the contract's `Uint<128>` price/amount fields exceed SQLite's 64-bit `INTEGER` range. They round-trip through `BigInt(text)` in `OrderRepository`. `orders` holds the full disclosed payload including `signature` (the blinding factor) — this table is local-only (gitignored), never written to the chain.
 

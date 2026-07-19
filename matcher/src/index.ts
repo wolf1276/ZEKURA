@@ -152,7 +152,14 @@ async function main(): Promise<void> {
     'matcher operator wallet synced',
   );
 
-  const privateStatePassword = process.env.PRIVATE_STATE_PASSWORD?.trim() || 'Local-Devnet-Development-Placeholder-1';
+  const envPrivateStatePassword = process.env.PRIVATE_STATE_PASSWORD?.trim();
+  if (!envPrivateStatePassword) {
+    logger.warn(
+      { NODE_ENV: process.env.NODE_ENV },
+      'PRIVATE_STATE_PASSWORD is not set — falling back to the well-known local-devnet placeholder password. Set PRIVATE_STATE_PASSWORD in any non-local environment.',
+    );
+  }
+  const privateStatePassword = envPrivateStatePassword || 'Local-Devnet-Development-Placeholder-1';
   const walletProvider = {
     getCoinPublicKey: () => walletState.shielded.coinPublicKey.toHexString(),
     getEncryptionPublicKey: () => walletState.shielded.encryptionPublicKey.toHexString(),

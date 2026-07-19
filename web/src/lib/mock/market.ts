@@ -30,7 +30,7 @@ import type { AssetPair, MarketInsights } from "@/lib/types";
 export const TZKR_ASSET_ID =
   "5698abe70f5108b2b7607846049c4bf9890f50868686823b3fc8342f230a2760";
 
-/** NIGHT's own all-zero unshielded token color (nativeToken()) — a stable display/lookup id, never itself written into OrderDetails.asset. */
+/** Arbitrary placeholder display/lookup id for tNIGHT in this mock data — not NIGHT's real unshielded token color (see lib/nativeAsset.ts for that), and never itself written into OrderDetails.asset. */
 export const TNIGHT_ASSET_ID = "c3".padEnd(64, "0");
 
 export const ASSET_PAIRS: AssetPair[] = [

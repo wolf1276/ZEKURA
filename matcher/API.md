@@ -16,7 +16,7 @@ Base URL: `http://<host>:<port>` (defaults `0.0.0.0:4000`, see README.md). All b
   "status": "OPEN" | "MATCHED" | "SETTLING" | "FILLED" | "CANCELLED" | "EXPIRED" | "FAILED",
   "createdAt": 1700000000000,               // Matcher-local receipt time, unix ms
   "expiresAt": "9999999999",                // decimal string, unix seconds
-  "payoutAddress": "64 hex chars" | null    // real unshielded UserAddress, opt-in — required only for PPM protocol-liquidity eligibility (see settleWithProtocol below); null means user-vs-user matching only
+  "payoutAddress": "64 hex chars" | null    // real unshielded UserAddress, opt-in, stored for API-shape compatibility; not currently read by the PPM as an eligibility gate — the order owner's own wallet decides the real payout recipient when it submits settleWithProtocol (see README's PPM section)
 }
 ```
 

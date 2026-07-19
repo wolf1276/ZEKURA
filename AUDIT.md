@@ -1,5 +1,19 @@
 # Zekura Exchange Contract — Security Audit
 
+> **Scope notice (added post-audit, 2026-07-19):** This audit covers the
+> 5-circuit contract as of 2026-07-15 (`createOrder`, `getOrder`,
+> `cancelOrder`, `expireOrder`, `settle`). It **predates and does not cover**
+> the Treasury/admin/PPM module added afterward (`addAdmin`, `removeAdmin`,
+> `depositTreasury`, `withdrawTreasury`, `reserveLiquidity`,
+> `releaseLiquidity`, `releaseExpiredLiquidity`, `settleWithProtocol` — 8
+> circuits, more than half the currently deployed attack surface). A
+> follow-up release-candidate pass found that `reserveLiquidity`/
+> `releaseLiquidity`/`releaseExpiredLiquidity` have no caller-identity check
+> at all (unlike `settle()`, which is safe only because it requires witness
+> knowledge of both orders' private details) — see `RELEASE_CANDIDATE_REPORT.md`
+> §3 finding S1. Treat this file's "10/10 Production Readiness" score as
+> scoped to the circuits listed above, not the full deployed contract.
+
 **Scope:** `contracts/exchange.compact` (the sole production contract) and its
 direct TypeScript integration surface (`tests/exchange.test.ts`, `src/cli.ts`,
 `src/deploy.ts`, `scripts/e2e-check.ts`).
