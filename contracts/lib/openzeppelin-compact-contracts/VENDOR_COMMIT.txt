@@ -1,2 +1,0 @@
-05c391470850825f81653748177159b1f11b0fbd
-v0.3.0-alpha vendored from https://github.com/OpenZeppelin/compact-contracts

@@ -1,14 +1,19 @@
 /**
- * Deploy the Zekura Test Token (tZKR) fungible-token contract to a Midnight
- * network (undeployed by default; use --network preview|preprod for public
- * networks). Mirrors src/deploy.ts's flow exactly — same wallet/network
- * plumbing, same faucet-fund poll, same DUST setup, same deploy-retry loop —
- * so it slots into the existing `npm run setup` conventions.
+ * Deploy the Zekura Test Token (tZKR) — a native unshielded token contract —
+ * to a Midnight network (undeployed by default; use --network preview|preprod
+ * for public networks). Mirrors src/deploy.ts's flow exactly — same
+ * wallet/network plumbing, same faucet-fund poll, same DUST setup, same
+ * deploy-retry loop — so it slots into the existing `npm run setup`
+ * conventions.
  *
- * The token contract composes the OpenZeppelin Contracts for Compact
- * FungibleToken + Ownable modules (see contracts/tzkr-token.compact). The
- * deployer wallet becomes the token owner (the only identity allowed to mint);
- * the demo supply is minted afterwards by src/mint-tzkr.ts.
+ * The token contract (see contracts/tzkr-token.compact) mints a genuine
+ * chain-wide unshielded token color via mintUnshieldedToken — not an
+ * OpenZeppelin FungibleToken-style contract-internal ledger (that approach
+ * was abandoned; see docs/ARCHITECTURE_TZKR_UNSHIELDED_MIGRATION.md for why
+ * it could never be custodied by the Exchange's Treasury). The deployer
+ * wallet becomes the token owner (the only identity allowed to mint); the
+ * demo supply is minted afterwards by src/mint-tzkr.ts, which also records
+ * the real minted color back into .midnight-tzkr.json.
  *
  * The resulting address is written to .midnight-tzkr.json (gitignored, a
  * separate file from .midnight-state.json so it never clobbers the exchange
@@ -22,7 +27,7 @@ import * as Rx from 'rxjs';
 
 import { resolveNetwork, getOrCreateSeed, getOrCreateAdminSecret } from './network';
 import { createWallet, persistWalletState, startCheckpointing, unshieldedToken, type WalletContext } from './wallet';
-import { recordTzkrDeployment, TZKR_TOKEN_NAME, TZKR_TOKEN_SYMBOL, TZKR_TOKEN_DECIMALS } from './tzkr-state';
+import { recordTzkrDeployment } from './tzkr-state';
 
 import { deployContract } from '@midnight-ntwrk/midnight-js-contracts';
 import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
@@ -68,21 +73,16 @@ const Tzkr = await import(pathToFileURL(contractPath).href);
 
 // The token owner (mint authority). Reuses the same per-network admin secret
 // the exchange Treasury uses, so a single operator identity owns both. The
-// on-chain owner is the derived account id = persistentHash([secret]); the raw
-// secret is injected via the Ownable/FungibleToken witnesses (only invoked on
-// circuit calls — deployment posts initialState only, so they never fire here,
-// but they must still be supplied to satisfy the type-level witness contract).
+// on-chain owner is the derived key = deriveOwnerKey(secret) (the constructor
+// stores only this hash — the raw secret never appears on-chain). This
+// contract declares no witnesses at all (mint takes the secret as an ordinary,
+// non-disclosed circuit argument instead), so no witness object is needed.
 const ownerSecretHex = getOrCreateAdminSecret(network);
 const ownerSecret = Buffer.from(ownerSecretHex, 'hex');
-const ownerAccountId: Uint8Array = Tzkr.pureCircuits.deriveAccountId(ownerSecret);
-
-const tzkrWitnesses = {
-  wit_OwnableSK: (ctx: any): [any, Uint8Array] => [ctx.privateState, ownerSecret],
-  wit_FungibleTokenSK: (ctx: any): [any, Uint8Array] => [ctx.privateState, ownerSecret],
-};
+const ownerId: Uint8Array = Tzkr.pureCircuits.deriveOwnerKey(ownerSecret);
 
 const compiledContractBase = CompiledContract.make<TzkrContract<undefined>>('tzkr-token', Tzkr.Contract);
-const compiledContractWithWitnesses = CompiledContract.withWitnesses(compiledContractBase, tzkrWitnesses);
+const compiledContractWithWitnesses = CompiledContract.withVacantWitnesses(compiledContractBase);
 const compiledContract = CompiledContract.withCompiledFileAssets(compiledContractWithWitnesses, zkConfigPath);
 
 async function createProviders(walletCtx: WalletContext) {
@@ -230,8 +230,6 @@ async function main() {
   process.stdout.write(' done.\n');
   console.log('  Deploying contract...\n');
 
-  const initOwner = { is_left: true, left: ownerAccountId, right: { bytes: new Uint8Array(32) } };
-
   const MAX_RETRIES = 20;
   const RETRY_DELAY_MS = 5000;
   let deployed: Awaited<ReturnType<typeof deployContract>> | undefined;
@@ -239,7 +237,7 @@ async function main() {
     try {
       deployed = await deployContract(providers, {
         compiledContract: compiledContract as any,
-        args: [initOwner, TZKR_TOKEN_NAME, TZKR_TOKEN_SYMBOL, BigInt(TZKR_TOKEN_DECIMALS)],
+        args: [ownerSecret],
       });
       break;
     } catch (err: any) {
@@ -266,13 +264,14 @@ async function main() {
   const contractAddress = deployed.deployTxData.public.contractAddress;
   console.log('  ✅ tZKR deployed successfully!\n');
   console.log(`  tZKR Contract Address: ${contractAddress}\n`);
-  console.log(`  Token owner account id: ${Buffer.from(ownerAccountId).toString('hex')}`);
-  console.log('  (mint authority — src/mint-tzkr.ts injects the matching secret via witness)\n');
+  console.log(`  Token owner id: ${Buffer.from(ownerId).toString('hex')}`);
+  console.log('  (mint authority — src/mint-tzkr.ts supplies the matching secret directly to mint())\n');
+  console.log('  Token has zero supply and no color yet — the first npm run mint:tzkr call mints both.\n');
 
   recordTzkrDeployment(network, {
     address: contractAddress,
     deployer: address.toString(),
-    ownerAccountId: Buffer.from(ownerAccountId).toString('hex'),
+    ownerAccountId: Buffer.from(ownerId).toString('hex'),
   });
   console.log('  Saved to .midnight-tzkr.json\n');
 

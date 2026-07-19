@@ -1,17 +1,26 @@
 /**
- * Mint the demo tZKR supply to the deployer/admin wallet (the token owner).
+ * Mint the demo tZKR supply — a real, chain-wide unshielded token color — to
+ * a wallet address.
  *
  * Non-interactive and CLI-driven, reusing the exact wallet/network/provider
  * plumbing of src/deploy.ts and src/cli.ts. Connects to the already-deployed
  * tZKR contract (address from .midnight-tzkr.json) and calls the owner-gated
- * `mint` circuit from the owner identity.
+ * `mint` circuit, which mints directly to `recipient` (no separate transfer
+ * step — see contracts/tzkr-token.compact). After a successful mint, records
+ * the real minted color back into .midnight-tzkr.json (src/tzkr-state.ts's
+ * recordTzkrColor) — every other consumer (Exchange OrderDetails.asset,
+ * Treasury assetKey, wallet unshielded balance lookups) needs this color,
+ * not the contract's address.
  *
  * Usage:
- *   npm run mint:tzkr -- --network preprod [--amount <whole-tokens>]
+ *   npm run mint:tzkr -- --network preprod [--amount <whole-tokens>] [--to <64-hex-user-address>]
  *
- * --amount is in WHOLE tokens (default 1,000,000); it is scaled by the token's
- * 6 decimals into base units on-chain. Recipient defaults to the owner's own
- * account id; pass --to <64-hex-account-id> to mint elsewhere.
+ * --amount is in WHOLE tokens (default 1,000,000); it is scaled by
+ * TZKR_TOKEN_DECIMALS into base units on-chain (capped at Uint<64> per mint —
+ * mintUnshieldedToken's own protocol limit; call this again to top up
+ * further). Recipient defaults to this script's own wallet address; pass
+ * --to <64-hex-address> to mint directly to a different real wallet instead
+ * (e.g. a test buyer/seller).
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -20,14 +29,17 @@ import { WebSocket } from 'ws';
 
 import { resolveNetwork, getOrCreateSeed, getOrCreateAdminSecret } from './network';
 import { createWallet, persistWalletState, type WalletContext } from './wallet';
-import { getTzkrDeployment, TZKR_TOKEN_DECIMALS } from './tzkr-state';
+import { getTzkrDeployment, recordTzkrColor, TZKR_TOKEN_DECIMALS } from './tzkr-state';
 
 import { findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
 import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
 import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
 import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
 import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
+import { getNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
+import { encodeUserAddress } from '@midnight-ntwrk/ledger-v8';
+import { MidnightBech32m, UnshieldedAddress } from '@midnight-ntwrk/wallet-sdk-address-format';
 import type { Contract as TzkrContract } from '../contracts/managed/tzkr-token/contract/index.js';
 
 // @ts-expect-error Required for wallet sync
@@ -56,17 +68,12 @@ const Tzkr = await import(pathToFileURL(contractPath).href);
 
 const ownerSecretHex = getOrCreateAdminSecret(network);
 const ownerSecret = Buffer.from(ownerSecretHex, 'hex');
-const ownerAccountId: Uint8Array = Tzkr.pureCircuits.deriveAccountId(ownerSecret);
 
-// Both witnesses return the owner secret so `mint`'s Ownable_assertOnlyOwner
-// derives the caller as the token owner.
-const tzkrWitnesses = {
-  wit_OwnableSK: (ctx: any): [any, Uint8Array] => [ctx.privateState, ownerSecret],
-  wit_FungibleTokenSK: (ctx: any): [any, Uint8Array] => [ctx.privateState, ownerSecret],
-};
-
+// This contract declares no witnesses — mint takes the owner secret as an
+// ordinary (non-disclosed) circuit argument instead, so no witness object is
+// needed at all.
 const compiledContractBase = CompiledContract.make<TzkrContract<undefined>>('tzkr-token', Tzkr.Contract);
-const compiledContractWithWitnesses = CompiledContract.withWitnesses(compiledContractBase, tzkrWitnesses);
+const compiledContractWithWitnesses = CompiledContract.withVacantWitnesses(compiledContractBase);
 const compiledContract = CompiledContract.withCompiledFileAssets(compiledContractWithWitnesses, zkConfigPath);
 
 async function createProviders(walletCtx: WalletContext) {
@@ -115,22 +122,35 @@ async function main() {
   const scale = 10n ** BigInt(TZKR_TOKEN_DECIMALS);
   const amount = wholeTokens * scale;
 
-  const toHex = parseArg('to');
-  const recipientId = toHex ? Buffer.from(toHex.replace(/^0x/, ''), 'hex') : ownerAccountId;
-  const recipient = { is_left: true, left: recipientId, right: { bytes: new Uint8Array(32) } };
-
   console.log('\n╔══════════════════════════════════════════════════════════════╗');
   console.log(`║  Mint tZKR demo supply on ${network}`);
   console.log('╚══════════════════════════════════════════════════════════════╝\n');
-  console.log(`  Contract:  ${deployment.address}`);
-  console.log(`  Recipient: ${Buffer.from(recipientId).toString('hex')}`);
-  console.log(`  Amount:    ${wholeTokens.toLocaleString()} tZKR (${amount.toLocaleString()} base units @ ${TZKR_TOKEN_DECIMALS} decimals)\n`);
+  console.log(`  Contract: ${deployment.address}`);
+  console.log(`  Amount:   ${wholeTokens.toLocaleString()} tZKR (${amount.toLocaleString()} base units @ ${TZKR_TOKEN_DECIMALS} decimals)\n`);
 
   console.log('  Creating + syncing wallet...');
   const walletCtx = await createWallet({ network, networkConfig, seed: SEED });
   await walletCtx.wallet.waitForSyncedState();
   await persistWalletState(network, walletCtx);
   console.log('  ✓ Synced.\n');
+
+  // Recipient must be a real, spendable UserAddress — mintUnshieldedToken
+  // creates an actual on-chain UTXO for it, unlike the old FungibleToken
+  // contract's arbitrary internal account-id keys. Defaults to this script's
+  // own wallet; --to <64-hex-address> mints directly to a different real
+  // wallet instead (see scripts/e2e-check.ts's withdrawTreasury for the same
+  // bech32m -> hex UserAddress conversion).
+  const toHex = parseArg('to');
+  let recipientAddressBytes: Uint8Array;
+  if (toHex) {
+    recipientAddressBytes = encodeUserAddress(toHex.replace(/^0x/, ''));
+  } else {
+    const ownBech32Address = walletCtx.unshieldedKeystore.getBech32Address().toString();
+    const ownAddressHex = MidnightBech32m.parse(ownBech32Address).decode(UnshieldedAddress, getNetworkId()).hexString;
+    recipientAddressBytes = encodeUserAddress(ownAddressHex);
+  }
+  const recipient = { is_left: false, left: { bytes: new Uint8Array(32) }, right: { bytes: recipientAddressBytes } };
+  console.log(`  Recipient: ${Buffer.from(recipientAddressBytes).toString('hex')}\n`);
 
   const providers = await createProviders(walletCtx);
   console.log('  Connecting to tZKR contract...');
@@ -141,21 +161,24 @@ async function main() {
   console.log('  ✓ Connected.\n');
 
   console.log('  Submitting mint transaction (build → prove → submit)...');
-  const tx = await found.callTx.mint(recipient, amount);
+  const tx = await found.callTx.mint(ownerSecret, recipient, amount);
   const txId = tx?.public?.txId ?? tx?.txId ?? '(submitted)';
   console.log(`  ✅ Minted! tx: ${txId}\n`);
 
-  // Read back on-chain balance + total supply to confirm the mint landed and is spendable.
+  // Read back the real minted color and record it — every other consumer
+  // (Exchange OrderDetails.asset, Treasury assetKey, wallet unshielded
+  // balance lookups) needs this color, not the contract's address.
   try {
     const contractState = await providers.publicDataProvider.queryContractState(deployment.address);
     if (contractState) {
       const led = Tzkr.ledger(contractState.data);
-      const bal = led._balances.member(recipient) ? led._balances.lookup(recipient) : 0n;
-      console.log(`  On-chain balance of recipient: ${bal.toLocaleString()} base units`);
-      console.log(`  On-chain total supply:         ${led._totalSupply.toLocaleString()} base units\n`);
+      const colorHex = Buffer.from(led.token_color as Uint8Array).toString('hex');
+      console.log(`  Real tZKR color: ${colorHex}`);
+      recordTzkrColor(network, colorHex);
+      console.log('  Saved to .midnight-tzkr.json\n');
     }
   } catch (e) {
-    console.log(`  (balance read-back skipped: ${e instanceof Error ? e.message : e})\n`);
+    console.log(`  (color read-back/record skipped: ${e instanceof Error ? e.message : e})\n`);
   }
 
   await persistWalletState(network, walletCtx);
