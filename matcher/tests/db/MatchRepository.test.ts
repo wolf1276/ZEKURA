@@ -12,7 +12,7 @@ function hexFill(byte: string): string {
   return byte.repeat(32);
 }
 
-const ASSET = { isLeft: true, left: hexFill('aa'), right: hexFill('00') };
+const ASSET = hexFill('aa');
 
 function sampleOrder(overrides: Partial<Order> = {}): Order {
   return {
@@ -60,14 +60,14 @@ describe('MatchRepository', () => {
   it('inserts and reads back a match', () => {
     const match = sampleMatch();
     matchRepo.insert(match);
-    expect(matchRepo.findById(match.id, ASSET)).toEqual(match);
+    expect(matchRepo.findById(match.id)).toEqual(match);
   });
 
   it('findByOrderId finds a match by either side', () => {
     const match = sampleMatch();
     matchRepo.insert(match);
-    expect(matchRepo.findByOrderId(hexFill('01'), ASSET)?.id).toBe(match.id);
-    expect(matchRepo.findByOrderId(hexFill('02'), ASSET)?.id).toBe(match.id);
+    expect(matchRepo.findByOrderId(hexFill('01'))?.id).toBe(match.id);
+    expect(matchRepo.findByOrderId(hexFill('02'))?.id).toBe(match.id);
   });
 
   it('listByOrderStatus finds matches whose orders are still MATCHED/SETTLING (settlement recovery)', () => {
@@ -93,7 +93,7 @@ describe('MatchRepository', () => {
     matchRepo.insert(sampleMatch({ id: 'm1', matchedAt: 100 }));
     matchRepo.insert(sampleMatch({ id: 'm2', matchedAt: 300 }));
     matchRepo.insert(sampleMatch({ id: 'm3', matchedAt: 200 }));
-    const recent = matchRepo.listRecentByAssetKey(assetKey(ASSET), 2, ASSET);
+    const recent = matchRepo.listRecentByAssetKey(assetKey(ASSET), 2);
     expect(recent.map((m) => m.id)).toEqual(['m2', 'm3']);
   });
 
@@ -101,7 +101,7 @@ describe('MatchRepository', () => {
     matchRepo.insert(sampleMatch({ id: 'm1', matchedAt: 100 }));
     matchRepo.insert(sampleMatch({ id: 'm2', matchedAt: 300 }));
     matchRepo.insert(sampleMatch({ id: 'm3', matchedAt: 200 }));
-    const since = matchRepo.listSinceByAssetKey(assetKey(ASSET), 200, ASSET);
+    const since = matchRepo.listSinceByAssetKey(assetKey(ASSET), 200);
     expect(since.map((m) => m.id)).toEqual(['m3', 'm2']);
   });
 });

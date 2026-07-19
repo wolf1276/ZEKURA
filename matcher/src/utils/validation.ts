@@ -26,11 +26,11 @@ function bigintStringSchema(max: bigint, label: string) {
     });
 }
 
-export const assetSchema = z.object({
-  isLeft: z.boolean(),
-  left: hex32Schema,
-  right: hex32Schema,
-});
+// The real, chain-wide unshielded token color (see types/Asset.ts) — a plain
+// Bytes<32> hex string. Previously an {isLeft,left,right} tuple; simplified
+// alongside contracts/exchange.compact's OrderDetails.asset field (see
+// docs/ARCHITECTURE_TZKR_UNSHIELDED_MIGRATION.md).
+export const assetSchema = hex32Schema;
 
 export const sideSchema = z.enum(['BUY', 'SELL']);
 
@@ -57,11 +57,9 @@ export const orderIdParamSchema = z.object({
   id: hex32Schema,
 });
 
-/** Query-string form of assetSchema — GET requests have no JSON body, so `isLeft` travels as the string "true"/"false" instead of a boolean. */
+/** Query-string form of assetSchema — same hex32 shape works directly in a query string, no boolean/tuple encoding needed anymore. */
 export const assetQuerySchema = z.object({
-  isLeft: z.enum(['true', 'false']).transform((v) => v === 'true'),
-  left: hex32Schema,
-  right: hex32Schema,
+  asset: hex32Schema,
 });
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -109,20 +107,15 @@ export const adminWithdrawSchema = z.object({
 });
 
 /**
- * Treasury/PPM balance routes are queryable two ways: by the raw on-chain
- * assetKey directly (what depositTreasury/withdrawTreasury/reserveLiquidity
- * actually key their ledger Maps by — e.g. the real native tNIGHT token
- * type), or by an order-shaped {isLeft,left,right} triple, which gets
- * hashed via deriveAssetKey the same way settleWithProtocol binds a
- * reservation to a specific order's asset. These are NOT the same
- * key — deriveAssetKey(asset) is a hash of the Either struct, never equal to
- * a raw token type — so which form to use depends on what's actually being
- * looked up (see api/treasury.ts).
+ * Treasury/PPM balance routes are queried by the raw on-chain assetKey — the
+ * same value as an order's own `asset` field (e.g. the real native tNIGHT
+ * token type, or tZKR's minted color). Previously these were two distinct
+ * keys (a raw token type vs. an order-shaped tuple hashed via
+ * deriveAssetKey), requiring a union schema and a resolver — now that
+ * OrderDetails.asset *is* the Treasury key directly, one flat schema covers
+ * both call sites (see api/treasury.ts).
  */
-export const treasuryAssetQuerySchema = z.union([
-  z.object({ assetKey: hex32Schema }),
-  assetQuerySchema,
-]);
+export const treasuryAssetQuerySchema = z.object({ assetKey: hex32Schema });
 
 export const treasuryHistoryQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(50),

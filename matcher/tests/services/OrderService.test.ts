@@ -19,7 +19,7 @@ function hexFill(byte: string): string {
   return byte.repeat(32);
 }
 
-const ASSET = { isLeft: true, left: hexFill('aa'), right: hexFill('00') };
+const ASSET = hexFill('aa');
 
 interface DraftOpts {
   id: string;
@@ -213,7 +213,7 @@ describe('OrderService.submitOrder', () => {
   });
 
   it('does not match orders on different assets', async () => {
-    const otherAsset = { isLeft: true, left: hexFill('bb'), right: hexFill('00') };
+    const otherAsset = hexFill('bb');
     const sell = buildInput({ id: hexFill('01'), side: 'SELL', price: 90n, amount: 10n, ownerId: hexFill('55'), signature: hexFill('11'), asset: otherAsset });
     const buy = buildInput({ id: hexFill('02'), side: 'BUY', price: 100n, amount: 10n, ownerId: hexFill('66'), signature: hexFill('22') });
     harness.onChainReader.register(sell.id, { state: 'OPEN', commitment: sell.commitment });
@@ -395,7 +395,7 @@ describe('OrderService market data reads', () => {
   });
 
   it('getOrderBookSnapshot aggregates resting OPEN orders for the queried asset only', async () => {
-    const other = { isLeft: true, left: hexFill('ff'), right: hexFill('00') };
+    const other = hexFill('ff');
     const buy1 = buildInput({ id: hexFill('01'), side: 'BUY', price: 900n, amount: 10n, ownerId: hexFill('aa'), signature: hexFill('11') });
     const buy2 = buildInput({ id: hexFill('02'), side: 'BUY', price: 900n, amount: 5n, ownerId: hexFill('bb'), signature: hexFill('22') });
     const sell = buildInput({ id: hexFill('03'), side: 'SELL', price: 1_200n, amount: 20n, ownerId: hexFill('cc'), signature: hexFill('33') });

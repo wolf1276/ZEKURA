@@ -11,9 +11,13 @@ import type Database from 'better-sqlite3';
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS orders (
   id            TEXT PRIMARY KEY,
-  asset_is_left INTEGER NOT NULL CHECK (asset_is_left IN (0, 1)),
-  asset_left    TEXT NOT NULL,
-  asset_right   TEXT NOT NULL,
+  -- The real, chain-wide unshielded token color of the traded asset —
+  -- identical to OrderDetails.asset and the Treasury's assetKey (see
+  -- contracts/exchange.compact and docs/ARCHITECTURE_TZKR_UNSHIELDED_MIGRATION.md).
+  -- Previously split across asset_is_left/asset_left/asset_right (an
+  -- Either<Bytes32,Bytes32> tuple) plus a separately-hashed asset_key column;
+  -- now that an order's asset field *is* the Treasury key, one column
+  -- suffices for both roles.
   asset_key     TEXT NOT NULL,
   side          TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
   price         TEXT NOT NULL,

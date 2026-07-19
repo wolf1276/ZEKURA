@@ -10,7 +10,7 @@ function hexFill(byte: string): string {
 function validPayload(overrides: Record<string, unknown> = {}) {
   return {
     id: hexFill('01'),
-    asset: { isLeft: true, left: hexFill('aa'), right: hexFill('00') },
+    asset: hexFill('aa'),
     side: 'BUY',
     price: '1000',
     amount: '500',
@@ -84,29 +84,19 @@ describe('orderIdParamSchema', () => {
 });
 
 describe('assetQuerySchema', () => {
-  const base = { left: hexFill('aa'), right: hexFill('bb') };
-
-  it('coerces the string "true"/"false" to a boolean', () => {
-    const trueResult = assetQuerySchema.safeParse({ ...base, isLeft: 'true' });
-    expect(trueResult.success).toBe(true);
-    if (trueResult.success) expect(trueResult.data.isLeft).toBe(true);
-
-    const falseResult = assetQuerySchema.safeParse({ ...base, isLeft: 'false' });
-    expect(falseResult.success).toBe(true);
-    if (falseResult.success) expect(falseResult.data.isLeft).toBe(false);
-  });
-
-  it('rejects a non-boolean-string isLeft', () => {
-    expect(assetQuerySchema.safeParse({ ...base, isLeft: 'yes' }).success).toBe(false);
+  it('accepts a well-formed asset hex string', () => {
+    const result = assetQuerySchema.safeParse({ asset: hexFill('aa') });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.asset).toBe(hexFill('aa'));
   });
 
   it('rejects a malformed hex field', () => {
-    expect(assetQuerySchema.safeParse({ ...base, isLeft: 'true', left: 'short' }).success).toBe(false);
+    expect(assetQuerySchema.safeParse({ asset: 'short' }).success).toBe(false);
   });
 });
 
 describe('tradesQuerySchema', () => {
-  const base = { isLeft: 'true', left: hexFill('aa'), right: hexFill('bb') };
+  const base = { asset: hexFill('aa') };
 
   it('defaults limit to 50', () => {
     const result = tradesQuerySchema.safeParse(base);
@@ -126,7 +116,7 @@ describe('tradesQuerySchema', () => {
 });
 
 describe('statsQuerySchema', () => {
-  const base = { isLeft: 'true', left: hexFill('aa'), right: hexFill('bb') };
+  const base = { asset: hexFill('aa') };
 
   it('defaults windowMs to 24 hours', () => {
     const result = statsQuerySchema.safeParse(base);

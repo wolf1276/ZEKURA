@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { OrderBook } from '../../src/orderbook/OrderBook.js';
 
-const ASSET_A = { isLeft: true, left: 'a'.repeat(64), right: '0'.repeat(64) };
-const ASSET_B = { isLeft: true, left: 'b'.repeat(64), right: '0'.repeat(64) };
+const ASSET_A = 'a'.repeat(64);
+const ASSET_B = 'b'.repeat(64);
 
 describe('OrderBook', () => {
   it('partitions orders by asset — never mixes two different assets in one bucket pair', () => {

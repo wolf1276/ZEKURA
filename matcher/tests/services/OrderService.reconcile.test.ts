@@ -21,7 +21,7 @@ function hexFill(byte: string): string {
   return byte.repeat(32);
 }
 
-const ASSET = { isLeft: true, left: hexFill('aa'), right: hexFill('00') };
+const ASSET = hexFill('aa');
 const ON_CHAIN_ASSET_KEY = hexFill('55');
 
 function openOrder(id: string): Order {

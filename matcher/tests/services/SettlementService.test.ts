@@ -18,7 +18,7 @@ function hexFill(byte: string): string {
   return byte.repeat(32);
 }
 
-const ASSET = { isLeft: true, left: hexFill('aa'), right: hexFill('00') };
+const ASSET = hexFill('aa');
 const BUY_ID = hexFill('01');
 const SELL_ID = hexFill('02');
 

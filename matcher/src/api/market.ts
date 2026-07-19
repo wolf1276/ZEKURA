@@ -51,7 +51,7 @@ export function registerMarketRoutes(app: FastifyInstance, orderService: OrderSe
     if (!parsed.success) {
       return reply.code(400).send({ error: 'validation_failed', issues: parsed.error.issues });
     }
-    return reply.code(200).send(orderBookToJSON(orderService.getOrderBookSnapshot(parsed.data)));
+    return reply.code(200).send(orderBookToJSON(orderService.getOrderBookSnapshot(parsed.data.asset)));
   });
 
   app.get('/trades', async (request, reply: FastifyReply) => {
@@ -59,7 +59,7 @@ export function registerMarketRoutes(app: FastifyInstance, orderService: OrderSe
     if (!parsed.success) {
       return reply.code(400).send({ error: 'validation_failed', issues: parsed.error.issues });
     }
-    const { limit, ...asset } = parsed.data;
+    const { asset, limit } = parsed.data;
     return reply.code(200).send({ trades: orderService.listRecentTrades(asset, limit).map(tradeToJSON) });
   });
 
@@ -68,7 +68,7 @@ export function registerMarketRoutes(app: FastifyInstance, orderService: OrderSe
     if (!parsed.success) {
       return reply.code(400).send({ error: 'validation_failed', issues: parsed.error.issues });
     }
-    const { windowMs, ...asset } = parsed.data;
+    const { asset, windowMs } = parsed.data;
     return reply.code(200).send(statsToJSON(orderService.getMarketStats(asset, windowMs)));
   });
 }

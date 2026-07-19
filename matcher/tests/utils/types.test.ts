@@ -35,24 +35,17 @@ describe('Status', () => {
 });
 
 describe('Asset', () => {
-  const left = 'a'.repeat(64);
-  const right = 'b'.repeat(64);
+  const a = 'a'.repeat(64);
+  const b = 'b'.repeat(64);
 
-  it('assetKey distinguishes isLeft', () => {
-    expect(assetKey({ isLeft: true, left, right })).not.toBe(assetKey({ isLeft: false, left, right }));
+  it('assetKey is the identity function — the asset color *is* the on-chain Treasury/order-book partition key', () => {
+    expect(assetKey(a)).toBe(a);
+    expect(assetKey(b)).toBe(b);
   });
 
-  it('assetKey encodes the full tuple, not just the active branch (mirrors contract == semantics)', () => {
-    const a = { isLeft: true, left, right: 'c'.repeat(64) };
-    const b = { isLeft: true, left, right: 'd'.repeat(64) };
-    expect(assetKey(a)).not.toBe(assetKey(b));
+  it('assetsEqual is a direct equality check — distinct colors are never equal', () => {
+    expect(assetsEqual(a, a)).toBe(true);
     expect(assetsEqual(a, b)).toBe(false);
-  });
-
-  it('assetsEqual requires all three fields to match', () => {
-    const a = { isLeft: true, left, right };
-    expect(assetsEqual(a, { ...a })).toBe(true);
-    expect(assetsEqual(a, { ...a, isLeft: false })).toBe(false);
   });
 });
 

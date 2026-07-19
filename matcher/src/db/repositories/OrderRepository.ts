@@ -1,14 +1,10 @@
 import type Database from 'better-sqlite3';
 
-import { assetKey } from '../../types/Asset.js';
 import type { Order } from '../../types/Order.js';
 import type { OrderStatus } from '../../types/Status.js';
 
 interface OrderRow {
   id: string;
-  asset_is_left: number;
-  asset_left: string;
-  asset_right: string;
   asset_key: string;
   side: string;
   price: string;
@@ -25,7 +21,7 @@ interface OrderRow {
 function rowToOrder(row: OrderRow): Order {
   return {
     id: row.id,
-    asset: { isLeft: row.asset_is_left === 1, left: row.asset_left, right: row.asset_right },
+    asset: row.asset_key,
     side: row.side as Order['side'],
     price: BigInt(row.price),
     amount: BigInt(row.amount),
@@ -47,17 +43,14 @@ export class OrderRepository {
     this.db
       .prepare(
         `INSERT INTO orders
-           (id, asset_is_left, asset_left, asset_right, asset_key, side, price, amount,
+           (id, asset_key, side, price, amount,
             commitment, owner_id, signature, status, created_at, expires_at, payout_address)
-         VALUES (@id, @asset_is_left, @asset_left, @asset_right, @asset_key, @side, @price, @amount,
+         VALUES (@id, @asset_key, @side, @price, @amount,
                  @commitment, @owner_id, @signature, @status, @created_at, @expires_at, @payout_address)`,
       )
       .run({
         id: order.id,
-        asset_is_left: order.asset.isLeft ? 1 : 0,
-        asset_left: order.asset.left,
-        asset_right: order.asset.right,
-        asset_key: assetKey(order.asset),
+        asset_key: order.asset,
         side: order.side,
         price: order.price.toString(),
         amount: order.amount.toString(),

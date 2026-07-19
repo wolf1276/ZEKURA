@@ -5,7 +5,7 @@ import { PriceTimePriorityStrategy } from '../../src/matcher/MatchingStrategy.js
 import { OrderBook } from '../../src/orderbook/OrderBook.js';
 import type { Order } from '../../src/types/Order.js';
 
-const ASSET = { isLeft: true, left: 'a'.repeat(64), right: '0'.repeat(64) };
+const ASSET = 'a'.repeat(64);
 
 function order(overrides: Partial<Order>): Order {
   return {
@@ -69,7 +69,7 @@ describe('MatchingEngine', () => {
   it('only searches the matching asset — an order for a different asset never matches', () => {
     const book = new OrderBook();
     const engine = new MatchingEngine(book, new PriceTimePriorityStrategy());
-    const otherAsset = { isLeft: true, left: 'b'.repeat(64), right: '0'.repeat(64) };
+    const otherAsset = 'b'.repeat(64);
 
     const sell = order({ id: 'sell', side: 'SELL', price: 90n, asset: otherAsset, ownerId: 'seller' });
     book.add(sell);

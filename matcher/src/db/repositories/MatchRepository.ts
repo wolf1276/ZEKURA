@@ -14,18 +14,17 @@ interface MatchRow {
   matched_at: number;
 }
 
-interface MatchRowWithAsset extends MatchRow {
-  buy_asset_is_left: number;
-  buy_asset_left: string;
-  buy_asset_right: string;
-}
-
-function rowToMatch(row: MatchRow, asset: Match['asset']): Match {
+// asset_key *is* the real asset color now (see types/Asset.ts) — no separate
+// caller-supplied `asset` parameter needed to reconstruct a Match from a row
+// anymore (previously the matches table only stored a one-way hash of the
+// full asset tuple, so the caller had to already know the tuple to rebuild
+// it; that indirection is gone along with deriveAssetKey).
+function rowToMatch(row: MatchRow): Match {
   return {
     id: row.id,
     buyOrderId: row.buy_order_id,
     sellOrderId: row.sell_order_id,
-    asset,
+    asset: row.asset_key,
     price: BigInt(row.price),
     amount: BigInt(row.amount),
     matchedAt: row.matched_at,
@@ -52,58 +51,55 @@ export class MatchRepository {
       });
   }
 
-  /** Reads back a match. Requires `asset` since the matches table only stores the asset's partition key, not the full tuple. */
-  findById(id: string, asset: Match['asset']): Match | undefined {
+  findById(id: string): Match | undefined {
     const row = this.db.prepare('SELECT * FROM matches WHERE id = ?').get(id) as MatchRow | undefined;
-    return row ? rowToMatch(row, asset) : undefined;
+    return row ? rowToMatch(row) : undefined;
   }
 
-  findByOrderId(orderId: string, asset: Match['asset']): Match | undefined {
+  findByOrderId(orderId: string): Match | undefined {
     const row = this.db
       .prepare('SELECT * FROM matches WHERE buy_order_id = ? OR sell_order_id = ? ORDER BY matched_at DESC LIMIT 1')
       .get(orderId, orderId) as MatchRow | undefined;
-    return row ? rowToMatch(row, asset) : undefined;
+    return row ? rowToMatch(row) : undefined;
   }
 
-  /** Most recent trades for one asset, newest first — the read path behind GET /trades. Requires `asset` for the same reason findById does: the matches table only stores the partition key, not the full tuple. */
-  listRecentByAssetKey(assetKeyValue: string, limit: number, asset: Match['asset']): Match[] {
+  /** Most recent trades for one asset, newest first — the read path behind GET /trades. */
+  listRecentByAssetKey(assetKeyValue: string, limit: number): Match[] {
     const rows = this.db
       .prepare('SELECT * FROM matches WHERE asset_key = ? ORDER BY matched_at DESC LIMIT ?')
       .all(assetKeyValue, limit) as MatchRow[];
-    return rows.map((row) => rowToMatch(row, asset));
+    return rows.map(rowToMatch);
   }
 
   /** Trades for one asset at or after `sinceMs`, oldest first — the read path behind GET /stats's rolling window. */
-  listSinceByAssetKey(assetKeyValue: string, sinceMs: number, asset: Match['asset']): Match[] {
+  listSinceByAssetKey(assetKeyValue: string, sinceMs: number): Match[] {
     const rows = this.db
       .prepare('SELECT * FROM matches WHERE asset_key = ? AND matched_at >= ? ORDER BY matched_at ASC')
       .all(assetKeyValue, sinceMs) as MatchRow[];
-    return rows.map((row) => rowToMatch(row, asset));
+    return rows.map(rowToMatch);
   }
 
   /**
    * Matches whose buy or sell order currently has one of `statuses` — used
    * at startup to re-enqueue settlements that were still in flight (order
    * status MATCHED/SETTLING) when the process last stopped, since the
-   * SettlementQueue itself is purely in-memory. Joins against `orders` for
-   * the buy side's asset tuple (the matches table only stores the asset's
-   * partition key).
+   * SettlementQueue itself is purely in-memory. Still joins against `orders`
+   * for the status filter itself, but no longer needs any asset columns from
+   * it — matches.asset_key already holds the real asset value directly.
    */
   listByOrderStatus(statuses: readonly OrderStatus[]): Match[] {
     if (statuses.length === 0) return [];
     const placeholders = statuses.map(() => '?').join(', ');
     const rows = this.db
       .prepare(
-        `SELECT m.*, o.asset_is_left AS buy_asset_is_left, o.asset_left AS buy_asset_left, o.asset_right AS buy_asset_right
+        `SELECT m.*
          FROM matches m
          JOIN orders o ON o.id = m.buy_order_id
          JOIN orders s ON s.id = m.sell_order_id
          WHERE o.status IN (${placeholders}) OR s.status IN (${placeholders})
          ORDER BY m.matched_at ASC`,
       )
-      .all(...statuses, ...statuses) as MatchRowWithAsset[];
-    return rows.map((row) =>
-      rowToMatch(row, { isLeft: row.buy_asset_is_left === 1, left: row.buy_asset_left, right: row.buy_asset_right }),
-    );
+      .all(...statuses, ...statuses) as MatchRow[];
+    return rows.map(rowToMatch);
   }
 }

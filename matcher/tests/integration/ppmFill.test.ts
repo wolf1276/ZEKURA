@@ -32,8 +32,7 @@ function hexFill(byte: string): string {
   return byte.repeat(32);
 }
 
-const ASSET = { isLeft: true, left: hexFill('aa'), right: hexFill('00') };
-const ON_CHAIN_ASSET_KEY = hexFill('55');
+const ASSET = hexFill('aa');
 
 interface DraftOpts {
   id: string;
@@ -127,7 +126,6 @@ function buildSystem(liquidity: TreasuryLiquidity, now: () => number = () => Dat
     getOrderBookSnapshot: (asset) => orderServiceRef!.getOrderBookSnapshot(asset),
     getMarketStats: (asset, windowMs) => orderServiceRef!.getMarketStats(asset, windowMs),
     treasuryClient,
-    toOnChainAssetKey: () => ON_CHAIN_ASSET_KEY,
   });
   const pricingEngine = new PricingEngine({ ...DEFAULT_PRICING_CONFIG, baseSpreadBps: 100, inventorySkewBps: 0 });
   const ppmService = new PPMService({
@@ -138,7 +136,6 @@ function buildSystem(liquidity: TreasuryLiquidity, now: () => number = () => Dat
     treasuryRepo,
     broadcaster,
     logger,
-    toOnChainAssetKey: () => ON_CHAIN_ASSET_KEY,
     statsWindowMs: 60_000,
     now,
   });

@@ -23,7 +23,7 @@ function hexFill(byte: string): string {
   return byte.repeat(32);
 }
 
-const ASSET = { isLeft: true, left: hexFill('aa'), right: hexFill('00') };
+const ASSET = hexFill('aa');
 const ON_CHAIN_ASSET_KEY = hexFill('11');
 const NOW_MS = 1_700_000_000_000;
 
@@ -94,7 +94,6 @@ function makeHarness(opts: HarnessOpts) {
       changePct: null,
     }),
     treasuryClient,
-    toOnChainAssetKey: () => ON_CHAIN_ASSET_KEY,
   });
 
   const pricingEngine = new PricingEngine({ ...DEFAULT_PRICING_CONFIG, baseSpreadBps: 100, inventorySkewBps: 0 });
@@ -107,7 +106,6 @@ function makeHarness(opts: HarnessOpts) {
     treasuryRepo,
     broadcaster,
     logger,
-    toOnChainAssetKey: () => ON_CHAIN_ASSET_KEY,
     statsWindowMs: 60_000,
     now: () => NOW_MS,
   });

@@ -101,7 +101,7 @@ describe('buildExchangeWitnesses', () => {
   function sampleOrder(overrides: Partial<Order> = {}): Order {
     return {
       id: buyId,
-      asset: { isLeft: true, left: hexFill('aa'), right: hexFill('00') },
+      asset: hexFill('aa'),
       side: 'BUY',
       price: 1_000n,
       amount: 500n,

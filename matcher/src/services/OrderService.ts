@@ -409,12 +409,12 @@ export class OrderService {
 
   /** Most recent trades (fills) for one asset, newest first — the read path behind GET /trades. Each trade is a persisted Match; the frontend's live trade tape appends to this from the existing order.matched WS broadcast. */
   listRecentTrades(asset: Asset, limit: number): Match[] {
-    return this.matchRepo.listRecentByAssetKey(assetKey(asset), limit, asset);
+    return this.matchRepo.listRecentByAssetKey(assetKey(asset), limit);
   }
 
   /** Rolling-window stats for one asset, computed on read from persisted matches — the read path behind GET /stats. See types/MarketStats.ts. */
   getMarketStats(asset: Asset, windowMs: number): MarketStats {
-    const trades = this.matchRepo.listSinceByAssetKey(assetKey(asset), this.now() - windowMs, asset);
+    const trades = this.matchRepo.listSinceByAssetKey(assetKey(asset), this.now() - windowMs);
     if (trades.length === 0) {
       return { asset, lastPrice: null, openPrice: null, high: null, low: null, volumeBase: 0n, tradeCount: 0, changePct: null };
     }

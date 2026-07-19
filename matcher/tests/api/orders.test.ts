@@ -12,7 +12,7 @@ function hexFill(byte: string): string {
 function sampleOrder(overrides: Partial<Order> = {}): Order {
   return {
     id: hexFill('01'),
-    asset: { isLeft: true, left: hexFill('aa'), right: hexFill('00') },
+    asset: hexFill('aa'),
     side: 'BUY',
     price: 1000n,
     amount: 50n,

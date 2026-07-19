@@ -20,8 +20,6 @@ export interface PPMServiceDeps {
   readonly treasuryRepo: TreasuryRepository;
   readonly broadcaster: Broadcaster;
   readonly logger: Logger;
-  /** deriveAssetKey(asset) — see MarketDataService's doc comment on the same mapping. */
-  readonly toOnChainAssetKey: (asset: Order['asset']) => Hex32;
   readonly statsWindowMs: number;
   readonly now?: () => number;
 }
@@ -68,7 +66,6 @@ export class PPMService {
   private readonly treasuryRepo: TreasuryRepository;
   private readonly broadcaster: Broadcaster;
   private readonly logger: Logger;
-  private readonly toOnChainAssetKey: (asset: Order['asset']) => Hex32;
   private readonly statsWindowMs: number;
   private readonly now: () => number;
 
@@ -80,7 +77,6 @@ export class PPMService {
     this.treasuryRepo = deps.treasuryRepo;
     this.broadcaster = deps.broadcaster;
     this.logger = deps.logger;
-    this.toOnChainAssetKey = deps.toOnChainAssetKey;
     this.statsWindowMs = deps.statsWindowMs;
     this.now = deps.now ?? (() => Date.now());
   }
@@ -109,7 +105,8 @@ export class PPMService {
    * owns applying a MatchingEngine result.
    */
   async attemptFill(order: Pick<Order, 'id' | 'asset' | 'side' | 'price' | 'amount' | 'payoutAddress'>): Promise<PpmFillOutcome> {
-    const onChainAssetKey = this.toOnChainAssetKey(order.asset);
+    // order.asset *is* the Treasury's on-chain assetKey now (see types/Asset.ts).
+    const onChainAssetKey = order.asset;
     const snapshot = await this.marketDataService.getSnapshot(order.asset, this.statsWindowMs);
     const referencePrice = MarketDataService.referencePrice(snapshot);
     const nowSeconds = this.nowSeconds();

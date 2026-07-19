@@ -22,12 +22,11 @@
  */
 import * as rt from '@midnight-ntwrk/compact-runtime';
 
-import type { Asset } from '../types/Asset.js';
 import type { Order } from '../types/Order.js';
 import { bytes32ToHex, hexToBytes32 } from './hex.js';
 
 export interface OrderDetailsValue {
-  asset: { is_left: boolean; left: Uint8Array; right: Uint8Array };
+  asset: Uint8Array;
   isBuy: boolean;
   price: bigint;
   amount: bigint;
@@ -38,30 +37,9 @@ export interface OrderDetailsValue {
 const Uint128Type = new rt.CompactTypeUnsignedInteger(340282366920938463463374607431768211455n, 16);
 const Uint64Type = new rt.CompactTypeUnsignedInteger(18446744073709551615n, 8);
 
-class EitherBytes32Type implements rt.CompactType<{ is_left: boolean; left: Uint8Array; right: Uint8Array }> {
-  alignment() {
-    return rt.CompactTypeBoolean.alignment().concat(
-      rt.Bytes32Descriptor.alignment().concat(rt.Bytes32Descriptor.alignment()),
-    );
-  }
-  fromValue(value: rt.Value) {
-    return {
-      is_left: rt.CompactTypeBoolean.fromValue(value),
-      left: rt.Bytes32Descriptor.fromValue(value),
-      right: rt.Bytes32Descriptor.fromValue(value),
-    };
-  }
-  toValue(v: { is_left: boolean; left: Uint8Array; right: Uint8Array }) {
-    return rt.CompactTypeBoolean.toValue(v.is_left).concat(
-      rt.Bytes32Descriptor.toValue(v.left).concat(rt.Bytes32Descriptor.toValue(v.right)),
-    );
-  }
-}
-const eitherType = new EitherBytes32Type();
-
 class OrderDetailsType implements rt.CompactType<OrderDetailsValue> {
   alignment() {
-    return eitherType
+    return rt.Bytes32Descriptor
       .alignment()
       .concat(
         rt.CompactTypeBoolean.alignment().concat(
@@ -73,7 +51,7 @@ class OrderDetailsType implements rt.CompactType<OrderDetailsValue> {
   }
   fromValue(value: rt.Value): OrderDetailsValue {
     return {
-      asset: eitherType.fromValue(value),
+      asset: rt.Bytes32Descriptor.fromValue(value),
       isBuy: rt.CompactTypeBoolean.fromValue(value),
       price: Uint128Type.fromValue(value),
       amount: Uint128Type.fromValue(value),
@@ -82,8 +60,7 @@ class OrderDetailsType implements rt.CompactType<OrderDetailsValue> {
     };
   }
   toValue(v: OrderDetailsValue) {
-    return eitherType
-      .toValue(v.asset)
+    return rt.Bytes32Descriptor.toValue(v.asset)
       .concat(
         rt.CompactTypeBoolean.toValue(v.isBuy).concat(
           Uint128Type.toValue(v.price).concat(
@@ -101,17 +78,13 @@ export const orderDetailsType = new OrderDetailsType();
 /** Builds the contract's wire-form OrderDetails from a Matcher Order. */
 export function toOrderDetailsValue(order: Pick<Order, 'asset' | 'side' | 'price' | 'amount' | 'ownerId' | 'expiresAt'>): OrderDetailsValue {
   return {
-    asset: assetToWire(order.asset),
+    asset: hexToBytes32(order.asset),
     isBuy: order.side === 'BUY',
     price: order.price,
     amount: order.amount,
     owner: { bytes: hexToBytes32(order.ownerId) },
     expiresAt: order.expiresAt,
   };
-}
-
-function assetToWire(asset: Asset): { is_left: boolean; left: Uint8Array; right: Uint8Array } {
-  return { is_left: asset.isLeft, left: hexToBytes32(asset.left), right: hexToBytes32(asset.right) };
 }
 
 /** Recomputes persistentCommit<OrderDetails>(details, blinding) as a hex32 string. */

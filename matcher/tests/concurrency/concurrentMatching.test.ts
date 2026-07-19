@@ -19,7 +19,7 @@ function hexFill(byte: string): string {
   return byte.repeat(32);
 }
 
-const ASSET = { isLeft: true, left: hexFill('aa'), right: hexFill('00') };
+const ASSET = hexFill('aa');
 
 function buildInput(id: string, side: 'BUY' | 'SELL', price: bigint, amount: bigint, ownerId: string, signature: string): CreateOrderInput {
   const expiresAt = 9_999_999_999n;

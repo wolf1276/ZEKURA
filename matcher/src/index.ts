@@ -57,7 +57,7 @@ import {
   type SettleCircuitCaller,
 } from './settlement/SettlementClient.js';
 import { SettlementQueue } from './settlement/SettlementQueue.js';
-import type { Asset, Hex32 } from './types/Asset.js';
+import type { Hex32 } from './types/Asset.js';
 import { loadConfig } from './utils/config.js';
 import { bytes32ToHex, hexToBytes32 } from './utils/hex.js';
 import { createLogger } from './utils/logger.js';
@@ -234,17 +234,6 @@ async function main(): Promise<void> {
     },
   };
 
-  // deriveAssetKey collapses a matcher Asset (isLeft/left/right) into the
-  // same Bytes<32> the contract's own Treasury ledger Maps and
-  // receiveUnshielded/sendUnshielded's tokenType argument use — see
-  // contracts/exchange.compact's deriveAssetKey doc comment. Computed via
-  // the compiled contract's exported pureCircuits, so this can never drift
-  // from what the contract itself would compute.
-  const toOnChainAssetKey = (asset: Asset): Hex32 => {
-    const either = { is_left: asset.isLeft, left: hexToBytes32(asset.left), right: hexToBytes32(asset.right) };
-    return bytes32ToHex(Exchange.pureCircuits.deriveAssetKey(either));
-  };
-
   const treasuryReader: OnChainTreasuryReader = {
     async getLiquidity(assetKey: Hex32) {
       const contractState = await providers.publicDataProvider.queryContractState(deployment.address);
@@ -329,7 +318,6 @@ async function main(): Promise<void> {
     getOrderBookSnapshot: (asset) => orderServiceRef!.getOrderBookSnapshot(asset),
     getMarketStats: (asset, windowMs) => orderServiceRef!.getMarketStats(asset, windowMs),
     treasuryClient,
-    toOnChainAssetKey,
   });
   const pricingEngine = new PricingEngine(pricingConfig);
   const ppmService = new PPMService({
@@ -340,7 +328,6 @@ async function main(): Promise<void> {
     treasuryRepo,
     broadcaster,
     logger,
-    toOnChainAssetKey,
     statsWindowMs: STATS_WINDOW_MS,
   });
 
@@ -382,7 +369,7 @@ async function main(): Promise<void> {
 
   const app = buildApp({
     orderService,
-    treasury: { treasuryClient, treasuryRepo, pricingConfig, toOnChainAssetKey },
+    treasury: { treasuryClient, treasuryRepo, pricingConfig },
     admin: { adminAuth, treasuryClient, treasuryRepo, broadcaster, logger, onChainAdminActorId },
     logger: true,
   });

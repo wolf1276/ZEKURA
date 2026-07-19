@@ -13,7 +13,7 @@ function hexFill(byte: string): string {
 function sampleOrder(overrides: Partial<Order> = {}): Order {
   return {
     id: hexFill('01'),
-    asset: { isLeft: true, left: hexFill('aa'), right: hexFill('00') },
+    asset: hexFill('aa'),
     side: 'BUY',
     price: 1_000n,
     amount: 500n,
@@ -75,8 +75,8 @@ describe('OrderRepository', () => {
   });
 
   it('listOpenByAssetKey returns only OPEN orders for that asset, oldest first', () => {
-    const assetA = { isLeft: true, left: hexFill('aa'), right: hexFill('00') };
-    const assetB = { isLeft: true, left: hexFill('bb'), right: hexFill('00') };
+    const assetA = hexFill('aa');
+    const assetB = hexFill('bb');
     repo.insert(sampleOrder({ id: hexFill('01'), asset: assetA, createdAt: 200, status: 'OPEN' }));
     repo.insert(sampleOrder({ id: hexFill('02'), asset: assetA, createdAt: 100, status: 'OPEN' }));
     repo.insert(sampleOrder({ id: hexFill('03'), asset: assetA, createdAt: 150, status: 'CANCELLED' }));

@@ -7,7 +7,7 @@ function hexFill(byte: string): string {
   return byte.repeat(32);
 }
 
-const ASSET = { isLeft: true, left: hexFill('aa'), right: hexFill('00') };
+const ASSET = hexFill('aa');
 
 function sampleOrder(overrides: Partial<Order> = {}): Order {
   return {

@@ -4,7 +4,7 @@ import { Bucket } from '../../src/orderbook/Bucket.js';
 import { PriceTimePriorityStrategy } from '../../src/matcher/MatchingStrategy.js';
 import type { Order } from '../../src/types/Order.js';
 
-const ASSET = { isLeft: true, left: 'a'.repeat(64), right: '0'.repeat(64) };
+const ASSET = 'a'.repeat(64);
 const NOW = 1_000n;
 
 function order(overrides: Partial<Order>): Order {

@@ -5,21 +5,11 @@ import type { PricingConfig } from '../ppm/PricingEngine.js';
 import type { TreasuryClient } from '../ppm/TreasuryClient.js';
 import type { TreasuryEvent } from '../types/Treasury.js';
 import { treasuryAssetQuerySchema, treasuryHistoryQuerySchema } from '../utils/validation.js';
-import type { Asset } from '../types/Asset.js';
-
-/** Resolves either query form to the raw on-chain assetKey the Treasury's ledger Maps actually use — see validation.ts's treasuryAssetQuerySchema doc comment. */
-function resolveAssetKey(
-  parsed: { assetKey: string } | Asset,
-  toOnChainAssetKey: (asset: Asset) => string,
-): string {
-  return 'assetKey' in parsed ? parsed.assetKey : toOnChainAssetKey(parsed);
-}
 
 export interface TreasuryRoutesDeps {
   readonly treasuryClient: TreasuryClient;
   readonly treasuryRepo: TreasuryRepository;
   readonly pricingConfig: PricingConfig;
-  readonly toOnChainAssetKey: (asset: Asset) => string;
 }
 
 function eventToJSON(event: TreasuryEvent) {
@@ -55,7 +45,7 @@ export function registerTreasuryRoutes(app: FastifyInstance, deps: TreasuryRoute
     if (!parsed.success) {
       return reply.code(400).send({ error: 'validation_failed', issues: parsed.error.issues });
     }
-    const onChainAssetKey = resolveAssetKey(parsed.data, deps.toOnChainAssetKey);
+    const onChainAssetKey = parsed.data.assetKey;
     const liquidity = await deps.treasuryClient.getLiquidity(onChainAssetKey);
     return reply.code(200).send({
       assetKey: onChainAssetKey,
@@ -79,7 +69,7 @@ export function registerTreasuryRoutes(app: FastifyInstance, deps: TreasuryRoute
     if (!parsed.success) {
       return reply.code(400).send({ error: 'validation_failed', issues: parsed.error.issues });
     }
-    const onChainAssetKey = resolveAssetKey(parsed.data, deps.toOnChainAssetKey);
+    const onChainAssetKey = parsed.data.assetKey;
     const liquidity = await deps.treasuryClient.getLiquidity(onChainAssetKey);
     return reply.code(200).send({
       assetKey: onChainAssetKey,

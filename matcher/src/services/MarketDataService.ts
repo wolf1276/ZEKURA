@@ -1,6 +1,6 @@
 import type { OrderBookSnapshot } from '../orderbook/snapshot.js';
 import type { TreasuryClient, TreasuryLiquidity } from '../ppm/TreasuryClient.js';
-import type { Asset, Hex32 } from '../types/Asset.js';
+import type { Asset } from '../types/Asset.js';
 import type { MarketStats } from '../types/MarketStats.js';
 
 /**
@@ -32,8 +32,6 @@ export interface MarketDataServiceDeps {
   readonly getOrderBookSnapshot: (asset: Asset) => OrderBookSnapshot;
   readonly getMarketStats: (asset: Asset, windowMs: number) => MarketStats;
   readonly treasuryClient: TreasuryClient;
-  /** deriveAssetKey(asset) — the contract's on-chain Bytes<32> key, distinct from the matcher's own off-chain assetKey() partition string (see types/Asset.ts). Composed in src/index.ts from the compiled contract's pureCircuits. */
-  readonly toOnChainAssetKey: (asset: Asset) => Hex32;
 }
 
 export class MarketDataService {
@@ -42,7 +40,9 @@ export class MarketDataService {
   async getSnapshot(asset: Asset, statsWindowMs: number): Promise<MarketDataSnapshot> {
     const orderBook = this.deps.getOrderBookSnapshot(asset);
     const stats = this.deps.getMarketStats(asset, statsWindowMs);
-    const treasury = await this.deps.treasuryClient.getLiquidity(this.deps.toOnChainAssetKey(asset));
+    // asset *is* the Treasury's on-chain assetKey now (see types/Asset.ts) —
+    // no separate mapping needed.
+    const treasury = await this.deps.treasuryClient.getLiquidity(asset);
     return { asset, orderBook, stats, treasury };
   }
 

@@ -11,7 +11,7 @@ function hexFill(byte: string): string {
 function sampleOrder(overrides: Partial<Order> = {}): Order {
   return {
     id: hexFill('01'),
-    asset: { isLeft: true, left: hexFill('aa'), right: hexFill('00') },
+    asset: hexFill('aa'),
     side: 'BUY',
     price: 1_000n,
     amount: 500n,
@@ -64,8 +64,8 @@ describe('orderDetailsCodec', () => {
       { amount: base.amount + 1n },
       { ownerId: hexFill('99') },
       { expiresAt: base.expiresAt - 1n },
-      { asset: { isLeft: false, left: base.asset.left, right: base.asset.right } },
-      { asset: { isLeft: true, left: hexFill('11'), right: base.asset.right } },
+      { asset: hexFill('11') },
+      { asset: hexFill('22') },
     ];
 
     for (const variant of variants) {

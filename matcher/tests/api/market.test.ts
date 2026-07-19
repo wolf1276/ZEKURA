@@ -9,10 +9,10 @@ function hexFill(byte: string): string {
   return byte.repeat(32);
 }
 
-const ASSET = { isLeft: true, left: hexFill('aa'), right: hexFill('00') };
+const ASSET = hexFill('aa');
 
 function assetQuery(overrides: Record<string, string> = {}) {
-  return { isLeft: 'true', left: ASSET.left, right: ASSET.right, ...overrides };
+  return { asset: ASSET, ...overrides };
 }
 
 function makeFakeOrderService(overrides: Partial<OrderService> = {}): OrderService {
@@ -53,7 +53,7 @@ describe('GET /orderbook', () => {
       })) as unknown as OrderService['getOrderBookSnapshot'],
     });
     const app = build(orderService);
-    const res = await app.inject({ method: 'GET', url: `/orderbook?isLeft=true&left=${ASSET.left}&right=${ASSET.right}` });
+    const res = await app.inject({ method: 'GET', url: `/orderbook?asset=${ASSET}` });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.bids).toEqual([{ price: '900', amount: '15', orderCount: 2 }]);
@@ -64,14 +64,14 @@ describe('GET /orderbook', () => {
   it('passes the parsed asset through to the service', async () => {
     const orderService = makeFakeOrderService();
     const app = build(orderService);
-    await app.inject({ method: 'GET', url: `/orderbook?isLeft=false&left=${ASSET.left}&right=${ASSET.right}` });
-    expect(orderService.getOrderBookSnapshot).toHaveBeenCalledWith({ isLeft: false, left: ASSET.left, right: ASSET.right });
+    await app.inject({ method: 'GET', url: `/orderbook?asset=${ASSET}` });
+    expect(orderService.getOrderBookSnapshot).toHaveBeenCalledWith(ASSET);
     await app.close();
   });
 
   it('returns 400 for a malformed asset query', async () => {
     const app = build(makeFakeOrderService());
-    const res = await app.inject({ method: 'GET', url: '/orderbook?isLeft=true&left=not-hex&right=' + ASSET.right });
+    const res = await app.inject({ method: 'GET', url: '/orderbook?asset=not-hex' });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe('validation_failed');
     await app.close();
