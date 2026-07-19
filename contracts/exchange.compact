@@ -43,7 +43,18 @@ export struct OrderEvent {
 // settlement), and checked against the public commitment before it is
 // trusted for anything.
 struct OrderDetails {
-  asset: Either<Bytes<32>, Bytes<32> >,
+  // The real, chain-wide unshielded token color of the traded (non-NIGHT)
+  // asset — e.g. tZKR's minted color (contracts/tzkr-token.compact). NIGHT
+  // itself never appears here: it is handled implicitly via nativeToken()
+  // in settleWithProtocol's payment leg, and settle() never touches funds at
+  // all. Previously an Either<Bytes<32>, Bytes<32>> hashed through
+  // deriveAssetKey into an arbitrary key with no real chain meaning — now
+  // that tZKR is a genuine unshielded token (not a contract-internal ledger
+  // balance), this field *is* the Treasury key and the receiveUnshielded/
+  // sendUnshielded token-type argument directly, with no hashing
+  // indirection to get wrong. See
+  // docs/ARCHITECTURE_TZKR_UNSHIELDED_MIGRATION.md for the full rationale.
+  asset: Bytes<32>,
   isBuy: Boolean,
   price: Uint<128>,
   amount: Uint<128>,
@@ -71,8 +82,9 @@ export struct TreasuryTx {
 
 // A single PPM liquidity hold against one asset's available Treasury
 // balance. `assetKey` doubles as the raw unshielded token type passed to
-// receiveUnshielded/sendUnshielded — see deriveAssetKey below for how a
-// user order's `asset` field maps to this same key. `price` is the PPM's
+// receiveUnshielded/sendUnshielded — identical in shape and value to a user
+// order's own `asset` field, so the two compare equal directly with no
+// hashing indirection. `price` is the PPM's
 // quoted price for this reservation, checked against the filled order's
 // price in settleWithProtocol exactly the way settle() checks two user
 // orders cross. `expiresAt` bounds how long the PPM may hold this liquidity
@@ -104,7 +116,7 @@ export ledger eventLog: Map<Bytes<32>, OrderEvent>;
 // Treasury (Module 5)
 // ---------------------------------------------------------------------------
 
-// Per-asset custody, keyed by deriveAssetKey(OrderDetails.asset) (== the raw
+// Per-asset custody, keyed directly by OrderDetails.asset (== the raw
 // unshielded token type for that asset). Both start completely empty — no
 // entry exists for an asset until it is first deposited into, and
 // balanceOf/reservedOf below treat a missing entry as exactly 0. There is no
@@ -188,15 +200,6 @@ export pure circuit deriveOwnerId(secretKey: Bytes<32>): Bytes<32> {
 circuit recordEvent(kind: EventKind, orderId: Bytes<32>): [] {
   const key = persistentHash<OrderEvent>(OrderEvent { kind: kind, orderId: orderId });
   eventLog.insert(key, OrderEvent { kind: kind, orderId: orderId });
-}
-
-// Collapses an order's Either<shielded, unshielded>-encoded asset id into
-// the flat Bytes<32> key the Treasury's per-asset maps and
-// receiveUnshielded/sendUnshielded's tokenType argument both use. Exported
-// (and pure) so the Matcher can compute the identical key off-chain, the
-// same way deriveOwnerId is exported for wallet-side use.
-export pure circuit deriveAssetKey(asset: Either<Bytes<32>, Bytes<32> >): Bytes<32> {
-  return persistentHash<Either<Bytes<32>, Bytes<32> > >(asset);
 }
 
 // Derives a caller's DApp-specific admin identity from their own secret.
@@ -561,7 +564,7 @@ export circuit settleWithProtocol(
     "Caller is not the order owner"
   );
 
-  assert(deriveAssetKey(details.asset) == r.assetKey, "Asset mismatch between order and reservation");
+  assert(details.asset == r.assetKey, "Asset mismatch between order and reservation");
   assert(disclose(details.amount) == r.amount, "Amount mismatch between order and reservation");
 
   // Same crossing rule as settle(), just against the PPM's single quoted

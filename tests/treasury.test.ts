@@ -24,7 +24,7 @@ const Uint64Type = new rt.CompactTypeUnsignedInteger(18446744073709551615n, 8);
 // off-chain encoding has to match contracts/exchange.compact's OrderDetails
 // struct layout exactly.
 type OrderDetailsValue = {
-  asset: { is_left: boolean; left: Uint8Array; right: Uint8Array };
+  asset: Uint8Array;
   isBuy: boolean;
   price: bigint;
   amount: bigint;
@@ -32,30 +32,9 @@ type OrderDetailsValue = {
   expiresAt: bigint;
 };
 
-class EitherBytes32Type implements rt.CompactType<{ is_left: boolean; left: Uint8Array; right: Uint8Array }> {
-  alignment() {
-    return rt.CompactTypeBoolean.alignment().concat(
-      rt.Bytes32Descriptor.alignment().concat(rt.Bytes32Descriptor.alignment()),
-    );
-  }
-  fromValue(value: rt.Value) {
-    return {
-      is_left: rt.CompactTypeBoolean.fromValue(value),
-      left: rt.Bytes32Descriptor.fromValue(value),
-      right: rt.Bytes32Descriptor.fromValue(value),
-    };
-  }
-  toValue(v: { is_left: boolean; left: Uint8Array; right: Uint8Array }) {
-    return rt.CompactTypeBoolean.toValue(v.is_left).concat(
-      rt.Bytes32Descriptor.toValue(v.left).concat(rt.Bytes32Descriptor.toValue(v.right)),
-    );
-  }
-}
-const eitherType = new EitherBytes32Type();
-
 class OrderDetailsType implements rt.CompactType<OrderDetailsValue> {
   alignment() {
-    return eitherType
+    return rt.Bytes32Descriptor
       .alignment()
       .concat(
         rt.CompactTypeBoolean.alignment().concat(
@@ -67,7 +46,7 @@ class OrderDetailsType implements rt.CompactType<OrderDetailsValue> {
   }
   fromValue(value: rt.Value): OrderDetailsValue {
     return {
-      asset: eitherType.fromValue(value),
+      asset: rt.Bytes32Descriptor.fromValue(value),
       isBuy: rt.CompactTypeBoolean.fromValue(value),
       price: Uint128Type.fromValue(value),
       amount: Uint128Type.fromValue(value),
@@ -76,8 +55,7 @@ class OrderDetailsType implements rt.CompactType<OrderDetailsValue> {
     };
   }
   toValue(v: OrderDetailsValue) {
-    return eitherType
-      .toValue(v.asset)
+    return rt.Bytes32Descriptor.toValue(v.asset)
       .concat(
         rt.CompactTypeBoolean.toValue(v.isBuy).concat(
           Uint128Type.toValue(v.price).concat(
@@ -162,8 +140,9 @@ const OWNER_SECRET_HEX = 'cc'.repeat(32);
 const ASSET_A = bytes32(0xa1); // stands in for a token type (e.g. tNIGHT's real nativeToken() bytes on a live network)
 const ASSET_B = bytes32(0xb2);
 // nativeToken() is the all-zeros token type — the key settleWithProtocol's
-// NIGHT payment leg reads/writes treasuryBalances under. A traded asset's
-// deriveAssetKey() hash can never be all zeros, so there is no collision.
+// NIGHT payment leg reads/writes treasuryBalances under. A real minted
+// token color (e.g. tZKR's, or ASSET_A/ASSET_B here) is never all-zero, so
+// there is no collision with NIGHT's own key.
 const NIGHT_KEY = bytes32(0x00);
 
 // Either<ContractAddress, UserAddress> — Left arm (ContractAddress), matching
@@ -177,7 +156,7 @@ const CONTRACT_RECIPIENT = {
 async function main() {
   const mod: any = await import(pathToFileURL(contractPath).href);
   const { Contract, ledger, OrderState, ReservationState, TxKind, pureCircuits } = mod;
-  const { deriveAdminId, deriveAssetKey, deriveOwnerId } = pureCircuits;
+  const { deriveAdminId, deriveOwnerId } = pureCircuits;
 
   const ADMIN_ID = deriveAdminId(Buffer.from(ADMIN_SECRET_HEX, 'hex'));
   // The default sample order's owner — real settleWithProtocol callers must
@@ -187,7 +166,7 @@ async function main() {
 
   function sampleOrder(overrides: Partial<OrderDetailsValue> = {}): OrderDetailsValue {
     return {
-      asset: { is_left: false, left: bytes32(0x00), right: ASSET_A },
+      asset: ASSET_A,
       isBuy: true,
       price: 1_000n,
       amount: 500n,
@@ -196,7 +175,10 @@ async function main() {
       ...overrides,
     };
   }
-  const ASSET_A_KEY = deriveAssetKey(sampleOrder().asset);
+  // OrderDetails.asset *is* the Treasury key directly now (no deriveAssetKey
+  // hashing indirection — see contracts/exchange.compact's asset-field
+  // simplification).
+  const ASSET_A_KEY = sampleOrder().asset;
 
   // Fresh contract instance bootstrapped with ADMIN_ID as the sole initial
   // admin. adminSecretKeyHex controls which secret the *caller's* witness
@@ -644,7 +626,7 @@ async function main() {
     const quoteId = bytes32(0xa6);
     const orderId = bytes32(0x92);
     const blinding = bytes32(0x93);
-    const details = sampleOrder({ asset: { is_left: false, left: bytes32(0x00), right: ASSET_B } });
+    const details = sampleOrder({ asset: ASSET_B });
     const commitment = computeCommitment(details, blinding);
 
     c.depositTreasury(ASSET_A_KEY, 10_000n);

@@ -32,7 +32,7 @@ const contractPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'exch
 // contracts/exchange.compact's OrderDetails, built entirely from
 // @midnight-ntwrk/compact-runtime's public CompactType primitives.
 type OrderDetailsValue = {
-  asset: { is_left: boolean; left: Uint8Array; right: Uint8Array };
+  asset: Uint8Array;
   isBuy: boolean;
   price: bigint;
   amount: bigint;
@@ -43,30 +43,9 @@ type OrderDetailsValue = {
 const Uint128Type = new rt.CompactTypeUnsignedInteger(340282366920938463463374607431768211455n, 16);
 const Uint64Type = new rt.CompactTypeUnsignedInteger(18446744073709551615n, 8);
 
-class EitherBytes32Type implements rt.CompactType<{ is_left: boolean; left: Uint8Array; right: Uint8Array }> {
-  alignment() {
-    return rt.CompactTypeBoolean.alignment().concat(
-      rt.Bytes32Descriptor.alignment().concat(rt.Bytes32Descriptor.alignment()),
-    );
-  }
-  fromValue(value: rt.Value) {
-    return {
-      is_left: rt.CompactTypeBoolean.fromValue(value),
-      left: rt.Bytes32Descriptor.fromValue(value),
-      right: rt.Bytes32Descriptor.fromValue(value),
-    };
-  }
-  toValue(v: { is_left: boolean; left: Uint8Array; right: Uint8Array }) {
-    return rt.CompactTypeBoolean.toValue(v.is_left).concat(
-      rt.Bytes32Descriptor.toValue(v.left).concat(rt.Bytes32Descriptor.toValue(v.right)),
-    );
-  }
-}
-const eitherType = new EitherBytes32Type();
-
 class OrderDetailsType implements rt.CompactType<OrderDetailsValue> {
   alignment() {
-    return eitherType
+    return rt.Bytes32Descriptor
       .alignment()
       .concat(
         rt.CompactTypeBoolean.alignment().concat(
@@ -78,7 +57,7 @@ class OrderDetailsType implements rt.CompactType<OrderDetailsValue> {
   }
   fromValue(value: rt.Value): OrderDetailsValue {
     return {
-      asset: eitherType.fromValue(value),
+      asset: rt.Bytes32Descriptor.fromValue(value),
       isBuy: rt.CompactTypeBoolean.fromValue(value),
       price: Uint128Type.fromValue(value),
       amount: Uint128Type.fromValue(value),
@@ -87,8 +66,7 @@ class OrderDetailsType implements rt.CompactType<OrderDetailsValue> {
     };
   }
   toValue(v: OrderDetailsValue) {
-    return eitherType
-      .toValue(v.asset)
+    return rt.Bytes32Descriptor.toValue(v.asset)
       .concat(
         rt.CompactTypeBoolean.toValue(v.isBuy).concat(
           Uint128Type.toValue(v.price).concat(
@@ -326,7 +304,7 @@ async function main() {
 
   function sampleOrder(overrides: Partial<OrderDetailsValue> = {}): OrderDetailsValue {
     return {
-      asset: { is_left: true, left: bytes32(0xaa), right: bytes32(0x00) },
+      asset: bytes32(0xaa),
       isBuy: true,
       price: 1_000n,
       amount: 123_456_789n,
@@ -627,7 +605,7 @@ async function main() {
   // ── settle() — failure paths ──────────────────────────────────────────────
   test('settle: rejects an asset mismatch between orders', () => {
     const { c, buyId, sellId } = makeMatchedPair({
-      sellOverrides: { asset: { is_left: true, left: bytes32(0xbb), right: bytes32(0x00) } },
+      sellOverrides: { asset: bytes32(0xbb) },
     });
     assertThrows(() => c.settle(buyId, sellId), 'Asset mismatch between orders', 'asset mismatch');
   });
