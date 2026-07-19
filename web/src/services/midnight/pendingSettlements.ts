@@ -30,6 +30,36 @@ export interface PendingSettlement {
 type Listener = (all: PendingSettlement[]) => void;
 const listeners = new Set<Listener>();
 
+// Module-level (not per-component) so the auto-settle effect and the manual
+// "Approve Settlement" button can't both fire settleWithProtocol for the
+// same order at once.
+const inFlight = new Set<string>();
+
+export function isSettlingInFlight(orderId: string): boolean {
+  return inFlight.has(orderId);
+}
+
+/**
+ * Whether the auto-settlement effect may fire settleWithProtocol for a
+ * freshly-fetched order, given the local pending-settlement quote's expiry.
+ * `status` should come from a just-fetched (not cached/localStorage) order
+ * read, since a stale OPEN read is exactly what lets a page reload
+ * re-trigger a settlement whose tx already landed.
+ */
+export function shouldAutoSettle(status: string, expiresAt: string, nowSeconds: number): boolean {
+  return status === "OPEN" && Number(expiresAt) > nowSeconds;
+}
+
+export function markSettlingInFlight(orderId: string): boolean {
+  if (inFlight.has(orderId)) return false;
+  inFlight.add(orderId);
+  return true;
+}
+
+export function unmarkSettlingInFlight(orderId: string): void {
+  inFlight.delete(orderId);
+}
+
 function readAll(): Record<string, PendingSettlement> {
   if (typeof window === "undefined") return {};
   try {

@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useWallet } from "@/wallet/walletHooks";
 import { useOrderActions } from "@/hooks/use-order-actions";
 import { usePendingSettlements } from "@/hooks/use-pending-settlements";
+import { markSettlingInFlight, unmarkSettlingInFlight } from "@/services/midnight/pendingSettlements";
 import { matcher } from "@/services/matcher/matcherClient";
 import {
   formatAmount,
@@ -88,6 +89,10 @@ export function OrdersPage() {
 
   const handleApproveSettlement = useCallback(
     (orderId: string, quoteId: string) => {
+      // The app-wide PpmSettlementToastEffect auto-submits settleWithProtocol
+      // the instant a quote reserves; this button is a fallback for when
+      // that's already in flight or already succeeded elsewhere.
+      if (!markSettlingInFlight(orderId)) return;
       setApproving(orderId);
       settleWithProtocol(orderId, quoteId)
         .then(() => {
@@ -100,7 +105,10 @@ export function OrdersPage() {
             description: err instanceof Error ? err.message : "Unknown error — try again.",
           });
         })
-        .finally(() => setApproving((current) => (current === orderId ? null : current)));
+        .finally(() => {
+          unmarkSettlingInFlight(orderId);
+          setApproving((current) => (current === orderId ? null : current));
+        });
     },
     [settleWithProtocol],
   );

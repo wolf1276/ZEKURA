@@ -12,6 +12,7 @@ import type { CreateOrderInput } from '../../src/utils/validation.js';
 import { computeCommitmentHex, toOrderDetailsValue } from '../../src/utils/orderDetailsCodec.js';
 import { createLogger } from '../../src/utils/logger.js';
 import type { Broadcaster } from '../../src/websocket/SocketServer.js';
+import type { PPMService, PpmFillOutcome } from '../../src/ppm/PPMService.js';
 
 const logger = createLogger('test', { level: 'silent' });
 
@@ -241,6 +242,114 @@ describe('OrderService.submitOrder', () => {
 
     expect(result.ok && result.match).toBeNull();
     expect(harness.orderRepo.findById(buy.id)?.status).toBe('OPEN');
+  });
+});
+
+describe('OrderService.submitOrder PPM fallback', () => {
+  // Verifies the flow required alongside self-trade prevention: skipping a
+  // same-owner candidate must NOT leave the order simply resting OPEN if a
+  // PPMService is configured — it must fall through to attemptFill() in the
+  // same synchronous request, exactly like a genuinely empty book does.
+  function makeHarnessWithPpm(pendingOutcome: PpmFillOutcome) {
+    const db = openDatabase(':memory:');
+    const orderRepo = new OrderRepository(db);
+    const matchRepo = new MatchRepository(db);
+    const orderBook = new OrderBook();
+    const matchingEngine = new MatchingEngine(orderBook, new PriceTimePriorityStrategy());
+    const onChainReader = new FakeOnChainReader();
+    const events: Array<[string, unknown]> = [];
+    const broadcaster: Broadcaster = { broadcast: (type, payload) => events.push([type, payload]) };
+    const onMatch = vi.fn();
+    const attemptFill = vi.fn(async () => pendingOutcome);
+    const ppmService = { attemptFill, markReservationExecuted: vi.fn() } as unknown as PPMService;
+
+    const service = new OrderService({
+      db, orderRepo, matchRepo, orderBook, matchingEngine, onChainReader, broadcaster, logger, onMatch, ppmService,
+    });
+
+    return { db, orderRepo, matchRepo, orderBook, onChainReader, events, onMatch, attemptFill, service };
+  }
+
+  const pendingQuote: PpmFillOutcome = {
+    pending: true,
+    quoteId: hexFill('99'),
+    assetKey: ASSET,
+    side: 'BUY',
+    price: 2n,
+    amount: 10n,
+    expiresAt: 9_999_999_999n,
+  };
+
+  it('same owner BUY + SELL: self-trade is skipped, no match, PPM is attempted immediately in the same request', async () => {
+    const harness = makeHarnessWithPpm(pendingQuote);
+    const sell = buildInput({ id: hexFill('01'), side: 'SELL', price: 2n, amount: 10n, ownerId: hexFill('aa'), signature: hexFill('11') });
+    const buy = buildInput({ id: hexFill('02'), side: 'BUY', price: 2n, amount: 10n, ownerId: hexFill('aa'), signature: hexFill('22') });
+    harness.onChainReader.register(sell.id, { state: 'OPEN', commitment: sell.commitment });
+    harness.onChainReader.register(buy.id, { state: 'OPEN', commitment: buy.commitment });
+
+    // The resting SELL lands in an empty book, so it triggers its own PPM
+    // attempt too (call #1) — that's independent of self-trade prevention.
+    await harness.service.submitOrder(sell);
+    harness.attemptFill.mockClear();
+
+    const result = await harness.service.submitOrder(buy);
+
+    expect(result.ok && result.match).toBeNull();
+    expect(harness.onMatch).not.toHaveBeenCalled(); // no user-to-user settlement path duplicated
+    expect(harness.attemptFill).toHaveBeenCalledTimes(1);
+    expect(harness.attemptFill).toHaveBeenCalledWith(expect.objectContaining({ id: buy.id, side: 'BUY' }));
+    if (result.ok) {
+      expect(result.pendingProtocolQuote).toMatchObject({ quoteId: pendingQuote.pending ? pendingQuote.quoteId : undefined });
+    }
+    expect(harness.events.map(([t]) => t)).toContain('order.ppm_quote_ready');
+  });
+
+  it('different owners: normal order-book match still wins, PPM is never consulted for the taker', async () => {
+    const harness = makeHarnessWithPpm(pendingQuote);
+    const sell = buildInput({ id: hexFill('01'), side: 'SELL', price: 2n, amount: 10n, ownerId: hexFill('55'), signature: hexFill('11') });
+    const buy = buildInput({ id: hexFill('02'), side: 'BUY', price: 2n, amount: 10n, ownerId: hexFill('66'), signature: hexFill('22') });
+    harness.onChainReader.register(sell.id, { state: 'OPEN', commitment: sell.commitment });
+    harness.onChainReader.register(buy.id, { state: 'OPEN', commitment: buy.commitment });
+
+    // The resting SELL still triggers its own PPM attempt (empty book) — same as above.
+    await harness.service.submitOrder(sell);
+    harness.attemptFill.mockClear();
+
+    const result = await harness.service.submitOrder(buy);
+
+    expect(result.ok && result.match).not.toBeNull();
+    expect(harness.onMatch).toHaveBeenCalledTimes(1);
+    expect(harness.attemptFill).not.toHaveBeenCalled();
+  });
+
+  it('no order-book match at all (empty book): PPM is attempted immediately, no delay/scheduler', async () => {
+    const harness = makeHarnessWithPpm(pendingQuote);
+    const buy = buildInput({ id: hexFill('01'), side: 'BUY', price: 2n, amount: 10n, ownerId: hexFill('aa'), signature: hexFill('11') });
+    harness.onChainReader.register(buy.id, { state: 'OPEN', commitment: buy.commitment });
+
+    const result = await harness.service.submitOrder(buy);
+
+    expect(result.ok && result.match).toBeNull();
+    expect(harness.attemptFill).toHaveBeenCalledTimes(1);
+    if (result.ok) {
+      expect(result.pendingProtocolQuote).not.toBeNull();
+    }
+  });
+
+  it('PPM declines (no liquidity): order simply rests OPEN, same as no PPM configured', async () => {
+    const harness = makeHarnessWithPpm({ pending: false, reason: 'Protocol liquidity unavailable.' });
+    const buy = buildInput({ id: hexFill('01'), side: 'BUY', price: 2n, amount: 10n, ownerId: hexFill('aa'), signature: hexFill('11') });
+    harness.onChainReader.register(buy.id, { state: 'OPEN', commitment: buy.commitment });
+
+    const result = await harness.service.submitOrder(buy);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.match).toBeNull();
+      expect(result.pendingProtocolQuote).toBeNull();
+      expect(result.order.status).toBe('OPEN');
+    }
+    expect(harness.orderBook.has(buy.id)).toBe(true);
   });
 });
 

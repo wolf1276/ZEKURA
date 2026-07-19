@@ -37,6 +37,18 @@ export class MatcherApiError extends Error {
   }
 }
 
+/**
+ * Retryable = the request never got a real answer from the Matcher: a
+ * network-level failure (fetch threw before a Response existed, e.g.
+ * timeout/connection error) or a 5xx (Matcher/RPC temporarily unavailable).
+ * A 4xx (order not found, expired quote, invalid state, ...) is the Matcher
+ * answering definitively — retrying it would just get the same answer.
+ */
+export function isRetryableMatcherError(err: unknown): boolean {
+  if (err instanceof MatcherApiError) return err.status >= 500;
+  return true;
+}
+
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
