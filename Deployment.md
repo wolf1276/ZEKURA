@@ -13,8 +13,8 @@ deployed contract build.
 | Network | Contract Address | Deployer | Deployed | Verified |
 |---|---|---|---|---|
 | **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` | `mn_addr_preview133whwmeuxs6zs5r0n6ad2sse6q076mk8lggq3y7pl8h4vsywp7zqgwjzmf` | 2026-07-15 | ✅ 2026-07-16 (`npm run test:e2e`, re-confirmed in the Level 4 pass below) |
-| **Preprod (exchange)** | `f7080eee45c16db312e7b389dfb42963b30c7b3cd333292f689abf4e5973a949` | `mn_addr_preprod1hwlanukqjw39mcm26wrnc5t2t62zgmy0p526zlx3pjsfmglegm2q3pgn0c` | 2026-07-19 | ✅ Live. Real user↔user trade (`settle()`) and protocol-liquidity trade (`settleWithProtocol`, real NIGHT + real tZKR) both exercised and independently confirmed via direct ledger reads — see "Asset-color redesign redeploy" below. Supersedes `20f760d5e29cd868a2d7a25872e71cb042d8f68130e932a13e5111e5136d05c9` (the pre-redesign build — `OrderDetails.asset` was still an `Either<Bytes32,Bytes32>` hashed via `deriveAssetKey`). |
-| **Preprod (tZKR token)** | `ee51fd584a48884b264adaf2fef0f5c00098084404e52cb9f5fd7e079d9c250c` | same deployer as above | 2026-07-19 | ✅ Live. Real minted unshielded color `5698abe70f5108b2b7607846049c4bf9890f50868686823b3fc8342f230a2760`, 1,000,000 tZKR minted, 100,000 deposited into the Exchange Treasury and independently confirmed to move via a real `settleWithProtocol` fill (Treasury tZKR balance decreased by exactly the filled amount, NIGHT balance increased by exactly `amount * price`). Supersedes `b16fbbec8ed99e38b16aa56166a646a1c71fd4a8e902fd0e357825d9a59efea4` (the OpenZeppelin `FungibleToken`-based build — see "Architectural blocker: tZKR cannot be custodied by Treasury", now resolved). |
+| **Preprod (exchange)** | `f9f29d13f94bd463475fef592bb47cf1a19e74cf27b741ce5fd092ec176c0c8f` | `mn_addr_preprod1420rzrglra4qm3l26suvxx8z0wtkc6tf8wn77zggzjd4geajtg2q6ag3cz` | 2026-07-19 | ⏳ Deployed, pending Treasury seed + BUY/SELL e2e verification — see "S1 fix redeploy" below. Supersedes `f7080eee45c16db312e7b389dfb42963b30c7b3cd333292f689abf4e5973a949` (missing `requireAdmin()` on `reserveLiquidity`/`releaseLiquidity` — S1 griefing/liquidity-lock vulnerability; treasury balance stranded, ~1M NIGHT + ~100K tZKR, no migration path, testnet only). |
+| **Preprod (tZKR token)** | `4ab7fecf77fa9ae81e560aa82fce78973eebfc289b1fef62b756938206f136b6` | `mn_addr_preprod1420rzrglra4qm3l26suvxx8z0wtkc6tf8wn77zggzjd4geajtg2q6ag3cz` (same deployer as the S1-fix exchange redeploy above) | 2026-07-19 | ✅ Live. Real minted unshielded color `40c9bb75b7302c92ca27814fcb744529e5b4eb7d10a5fa5ef8bf6e369c8acd32`, 1,000,000 tZKR minted, 100,000 deposited into the new Exchange Treasury. Redeployed alongside the S1 exchange fix because the previously-documented `ee51fd58…250c` contract's owner secret belongs to a different deployer wallet than this session's — its balances remain valid but unmintable by this deployer; kept on-chain, superseded here for Treasury-seeding purposes only. |
 | Undeployed (local devnet) | not persistent — redeploy via `npm run setup` | genesis seed | — | n/a |
 
 **Preview is now significantly stale** — it still runs the pre-Treasury 5-circuit build from 2026-07-15, with none of the Treasury/PPM/NIGHT-payment-leg/tZKR/asset-redesign work below. Out of scope for this pass (Preprod-only, matching every prior pass in this file).
@@ -22,6 +22,32 @@ deployed contract build.
 `web/.env.local` points `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREPROD` at
 the current exchange address above; `NEXT_PUBLIC_EXCHANGE_CONTRACT_ADDRESS_PREVIEW`
 is left blank (unchanged — no Preview redeploy has happened yet).
+
+---
+
+## S1 fix redeploy — 2026-07-19
+
+Fixes the S1 vulnerability: `reserveLiquidity` and `releaseLiquidity` had no
+caller-identity check, letting anyone lock arbitrary Treasury liquidity
+(`reserveLiquidity`) or front-run a pending `settleWithProtocol` to grief it
+(`releaseLiquidity`). Both circuits now call `requireAdmin()`, reusing the
+same admin secret the Matcher already holds for `depositTreasury`/
+`withdrawTreasury` — no new witness wiring, no new privacy leak.
+`releaseExpiredLiquidity` stays permissionless on purpose (see doc comment
+in `contracts/exchange.compact`); it's time-gated so there's nothing left to
+grief by the time it's callable.
+
+New contract, new address (new verifier keys — circuit structure changed).
+The old contract (`f7080eee…3a949`) still exists on-chain with its ~1M
+NIGHT + ~100K tZKR Treasury balance stranded (no cross-contract migration
+path; testnet only, no real value). New deployment starts with an empty
+Treasury — seeding and end-to-end verification are tracked in
+`HANDOFF_PREPROD_DEPLOYMENT.md`.
+
+30/30 `tests/treasury.test.ts` pass, including 3 new S1 regressions
+(non-admin `reserveLiquidity`/`releaseLiquidity` rejected;
+`releaseExpiredLiquidity` proven to never touch the admin witness via a
+throwing-witness harness).
 
 ---
 

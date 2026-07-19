@@ -37,7 +37,7 @@ import { encodeUserAddress } from '@midnight-ntwrk/ledger-v8';
 import { getNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
 import { MidnightBech32m, UnshieldedAddress } from '@midnight-ntwrk/wallet-sdk-address-format';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
-import { resolveNetwork, getOrCreateSeed, getDeployment } from '../src/network.js';
+import { resolveNetwork, getOrCreateSeed, getDeployment, getOrCreateAdminSecret } from '../src/network.js';
 import { createWallet, persistWalletState } from '../src/wallet.js';
 import { getTzkrDeployment } from '../src/tzkr-state.js';
 import type { Contract as ExchangeContract } from '../contracts/managed/exchange/contract/index.js';
@@ -135,9 +135,10 @@ async function main() {
       return [context.privateState, entry.blinding];
     },
     ownerSecretKey: (context: any) => [context.privateState, activeOwnerSecret],
-    adminSecretKey: () => {
-      throw new Error('adminSecretKey not implemented (this script never touches an admin-gated circuit).');
-    },
+    // S1 fix: reserveLiquidity/releaseLiquidity are now requireAdmin()-gated.
+    // Same admin secret the Matcher already holds for depositTreasury/
+    // withdrawTreasury (see getOrCreateAdminSecret / SettlementClient.ts).
+    adminSecretKey: (context: any) => [context.privateState, Buffer.from(getOrCreateAdminSecret(network), 'hex')],
   };
   const compiledContractBase = CompiledContract.make<ExchangeContract<undefined>>('exchange', Exchange.Contract);
   const compiledContractWithWitnesses = CompiledContract.withWitnesses(compiledContractBase, exchangeWitnesses);

@@ -28,7 +28,7 @@ maintainer/auditor to weigh.
 
 | Check | Command | Result |
 |---|---|---|
-| Root contract tests | `npm run test` | **68/68 passed** (`exchange` 34, `treasury` 28, `tzkr-token` 6) |
+| Root contract tests | `npm run test` | **70/70 passed** (`exchange` 34, `treasury` 30 — includes 3 new S1 regressions, `tzkr-token` 6) |
 | Root typecheck | `npm run build` (`tsc --noEmit`) | Clean, 0 errors |
 | Matcher typecheck | `npm run typecheck --workspace=matcher` | Clean, 0 errors |
 | Matcher lint | `npm run lint --workspace=matcher` | Clean, 0 warnings |
@@ -37,17 +37,21 @@ maintainer/auditor to weigh.
 | Web lint | `cd web && npm run lint` | Clean, 0 warnings |
 | Web tests | `cd web && npm run test` | **19/19 passed** |
 | Web production build | `cd web && npm run build` | Succeeds — all 21 routes (Turbopack) |
-| **Total automated tests** | | **300/300 passed** |
+| **Total automated tests** | | **302/302 passed** |
 
 Everything the mission asked to "run and pass" does pass. The README's own
 headline number (**284**) undercounted this by 16 tests relative to its own
 itemized breakdown — fixed in §2.
 
-Not exercised in this pass (environment constraint, not a defect): a live
-proof-server/indexer round trip and a real browser+wallet-extension
-click-through. Both are pre-existing, explicitly disclosed gaps (see
-`PRODUCTION_VALIDATION_REPORT.md` §5) and were not re-attempted here since
-this session had no browser or funded wallet extension available either.
+A follow-up session (below, "S1 fix redeploy") redeployed the S1-fixed
+contract to Preprod and exercised a full live proof-server/indexer round
+trip: real `depositTreasury`/`reserveLiquidity`/`releaseLiquidity`/
+`withdrawTreasury` lifecycle, a real user↔user `settle()` fill, and a real
+`settleWithProtocol()` PPM fill with Treasury balances moving on-chain
+(`scripts/e2e-check.ts`, `scripts/e2e-trade-check.ts`). Not exercised: a
+real browser+wallet-extension click-through — still a pre-existing,
+explicitly disclosed gap (see `PRODUCTION_VALIDATION_REPORT.md` §5), no
+browser/funded wallet extension available in this environment.
 
 ## 2. Fixes applied directly this session
 
@@ -71,7 +75,7 @@ API surface changed:
 
 | # | Severity | Location | Finding |
 |---|---|---|---|
-| S1 | **High** | `contracts/exchange.compact` — `reserveLiquidity`, `releaseLiquidity`, `releaseExpiredLiquidity` | These three circuits take **no witness and enforce no caller identity at all** — every parameter is a plain, publicly-supplied argument. This is qualitatively different from `settle()`'s "no caller check" (which is safe because a caller must supply a valid witness proving knowledge of both orders' private details). Anyone watching the mempool can see a legitimate `settleWithProtocol(orderId, quoteId, …)` about to land (the pending quote is public/enumerable) and front-run it with `releaseLiquidity(quoteId)`, flipping the reservation to `RELEASED` and making the real user's `settleWithProtocol` revert (`"Reservation is not open"`). No funds are lost or misdirected — but a persistent attacker can grief every PPM fill on the contract at trivial gas cost, defeating the fallback-liquidity feature entirely. This entire code path (the Treasury/PPM module — 8 circuits) **postdates `AUDIT.md` and was never covered by it** (confirmed: `AUDIT.md`'s authorization table lists exactly 5 circuits). Needs an explicit design decision (bind reservations to a caller identity, or accept and document the griefing risk) and inclusion in the next formal audit. |
+| S1 | ~~**High**~~ **RESOLVED** | `contracts/exchange.compact` — `reserveLiquidity`, `releaseLiquidity` | ~~These three circuits take **no witness and enforce no caller identity at all**~~ **Fixed**: `requireAdmin()` added to `reserveLiquidity` and `releaseLiquidity` (reuses the same admin secret the Matcher already holds for `depositTreasury`/`withdrawTreasury` — zero new wiring, no new privacy leak). `releaseExpiredLiquidity` deliberately stays permissionless: it's time-gated by `blockTimeGte`, so by the time it's callable the reservation's quote has already expired and `settleWithProtocol` against it would fail on its own regardless — nothing left to grief. Verified: 3 new regression tests in `tests/treasury.test.ts` (non-admin `reserveLiquidity`/`releaseLiquidity` rejected; `releaseExpiredLiquidity` proven via a throwing-witness harness to never touch the admin path), plus a live redeploy to Preprod (`f9f29d13…c8f`) with a real on-chain `depositTreasury`→`reserveLiquidity`→`releaseLiquidity`→`withdrawTreasury` lifecycle and a real `settleWithProtocol` PPM fill, both exercised via `npm run test:e2e` / `scripts/e2e-trade-check.ts`. See `Deployment.md` § "S1 fix redeploy — 2026-07-19". |
 | S2 | **Medium** | `web/src/services/midnight/ownerSecret.ts` | The DApp-local `ownerSecretKey` — the only credential that can `cancelOrder()` or approve `settleWithProtocol()` for orders created in a given browser — is a random 32 bytes generated once and stored **only** in `localStorage`, with **no export/import/backup UI anywhere in the app** (checked the Settings page specifically). Clearing site data, switching browsers, or switching devices permanently strips a user's ability to cancel their own open orders or approve a pending PPM settlement; the only recovery is waiting for `expireOrder`/`releaseExpiredLiquidity` (both permissionless, time-gated). No custodial fund loss — but a real, undocumented operational trap for real users. Not mentioned in README's "Wallet Setup" → "Troubleshooting" table. |
 | S3 | **Low / centralization** | `contracts/exchange.compact` — `addAdmin` | A single admin can unilaterally add unlimited further admins instantly — no multisig, no timelock, no cap. Acceptable for a testnet Treasury; worth a mainnet-checklist item given `admins` gates real fund custody (`depositTreasury`/`withdrawTreasury`). |
 | S4 | **Info** | `contracts/tzkr-token.compact` — `mint(sk, …)` | Owner secret is taken as a plain circuit parameter rather than via a `witness` function, unlike every analogous check in `exchange.compact` (`ownerSecretKey()`, `adminSecretKey()`). Functionally equivalent (still private, never disclosed) — a style inconsistency worth aligning for auditability, not a vulnerability. |
@@ -140,18 +144,20 @@ Dockerfile would have shipped a Matcher pointed at a dead contract (fixed in
 §2), and CI's contract-test job was silently one compile step away from
 failing (fixed in §2). Neither had been caught before this pass.
 
-## 6. Security Readiness Score: **6/10**
+## 6. Security Readiness Score: **8/10**
 
 The core privacy/authorization design is sound and independently
 re-verified in this pass: commitment-binding, replay protection, the
 one-way state machine, and the previously-audited P0 fix (`settleWithProtocol`
 owner check) all hold up under adversarial review, and are backed by
-regression tests. The score is capped at 6 because a materially-sized,
-fund-adjacent code surface — the entire Treasury/PPM module (8 circuits,
-holding real seeded liquidity on a public network) — **has never been
-through a formal audit**, and this pass found a genuine, previously
-unflagged griefing vector in it (S1). `AUDIT.md` is excellent for what it
-covers; what it covers is now under half the deployed circuit surface.
+regression tests. S1, this pass's own finding, is now fixed and redeployed:
+`requireAdmin()` gates `reserveLiquidity`/`releaseLiquidity`, verified by 3
+regression tests plus a live on-chain reservation-lifecycle and PPM-fill
+check against the redeployed Preprod contract. Held at 8, not higher,
+because the entire Treasury/PPM module (8 circuits, holding real seeded
+liquidity on a public network) **has still never been through a formal
+audit** — `AUDIT.md` predates it — and S2 (owner-secret backup) / S5 (no
+admin-auth tests) remain open.
 
 ## 7. Documentation Score: **7/10**
 
@@ -227,9 +233,10 @@ gaps, not quality problems in the code itself.
 
 ## 11. Recommended Mainnet checklist
 
-1. **Close S1** before any mainnet Treasury is funded with real value — this
-   is the one finding in this report that directly undermines a stated
-   product guarantee (protocol-owned liquidity as a reliable fallback).
+1. ~~**Close S1** before any mainnet Treasury is funded with real value~~ —
+   **done**: `requireAdmin()` added and redeployed to Preprod, see
+   `Deployment.md` § "S1 fix redeploy". Still needed before mainnet: formal
+   audit coverage of the fix (item 2 below).
 2. **Extend `AUDIT.md`'s formal process to the Treasury/PPM module** — all 8
    circuits currently outside its scope.
 3. Resolve S2 with either an export/import flow for the owner secret or a
@@ -290,20 +297,21 @@ Priority order:
 
 ### Public Preprod release: **GO**
 
-Every automated check passes (300/300 tests, clean typecheck/lint on all
+Every automated check passes (302/302 tests, clean typecheck/lint on all
 three tiers, clean production build), the codebase is free of dead
-code/TODOs, the previously-known P0 is fixed and regression-tested, the
-eight deployment-artifact and documentation-accuracy bugs found in this
-session are fixed, and the project's own documentation of its limitations
-is honest rather than inflated. This is a genuinely strong candidate for a
-public Preprod/hackathon release as-is.
+code/TODOs, the previously-known P0 and this pass's own S1 finding are both
+fixed and regression-tested (S1 additionally redeployed and verified live
+on-chain), the eight deployment-artifact and documentation-accuracy bugs
+found in this session are fixed, and the project's own documentation of its
+limitations is honest rather than inflated. This is a genuinely strong
+candidate for a public Preprod/hackathon release as-is.
 
 ### Mainnet / real-value release: **NO-GO**, pending §11
 
-The blocking items are narrow and well-defined, not structural: close S1
-(PPM griefing) and extend the formal audit to the Treasury/PPM module before
-any circuit in that module custodies real value. Nothing found in this pass
-suggests a deeper redesign is needed — the core commitment/privacy
+The blocking item is narrow and well-defined, not structural: extend the
+formal audit to the Treasury/PPM module (including the now-fixed S1 gate)
+before any circuit in that module custodies real value. Nothing found in
+this pass suggests a deeper redesign is needed — the core commitment/privacy
 architecture is sound and has already survived one independent audit's
 adversarial review.
 
