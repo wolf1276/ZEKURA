@@ -354,6 +354,15 @@ async function main(): Promise<void> {
   });
   orderServiceRef = orderService;
 
+  // The in-memory OrderBook starts empty on every process start, but
+  // orderRepo/SQLite persists OPEN orders across restarts — without this,
+  // any order resting OPEN before a restart becomes permanently invisible
+  // to matching (still shown as OPEN via the API/DB, but never considered
+  // as a counterparty by MatchingEngine.onOrderArrived).
+  for (const order of orderService.listOpen()) {
+    orderBook.add(order);
+  }
+
   settlementService = new SettlementService({
     db,
     orderRepo,
