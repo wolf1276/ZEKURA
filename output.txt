@@ -1,0 +1,31 @@
+1. Is the order persisted in the database?
+PASS
+
+2. Did the matcher pick it up?
+PASS
+
+3. Did PricingEngine.quote() execute?
+PASS
+
+4. Did PPMService execute?
+FAIL
+- exact file: matcher/src/ppm/PPMService.ts
+- exact function: attemptFill
+- exact line: 142
+- exact reason: `this.treasuryClient.reserveLiquidity()` fails with `Wallet.InsufficientFunds: Insufficient Funds: could not balance dust` because the Matcher operator wallet (which submits the transaction) lacks TDUST to pay network fees. Since the outcome is not 'success', `attemptFill` silently returns `{ pending: false }`.
+- exact fix: Fund the Matcher operator wallet with TDUST from the Midnight faucet so it can successfully balance and submit on-chain transactions.
+
+5. Was settleWithProtocol called?
+FAIL
+
+6. Did the wallet signing step occur?
+FAIL
+
+7. Was a settlement transaction submitted?
+FAIL
+
+8. Did reconciliation run?
+FAIL
+
+9. Why is the order still OPEN?
+Because when `PPMService.attemptFill` returns `{ pending: false }` due to the Matcher's TDUST insufficiency, `OrderService.submitOrder` treats it as "protocol liquidity unavailable" and falls back to leaving the order resting `OPEN` in the orderbook waiting for a user counterparty.
