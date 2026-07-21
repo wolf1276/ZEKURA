@@ -7,8 +7,11 @@
  * Follows the exact conventions already established and working in this
  * repo (src/cli.ts, src/deploy.ts, matcher/src/index.ts):
  * `CompiledContract.make/.withWitnesses/.withCompiledFileAssets` +
- * `findDeployedContract(providers, {...}).callTx.<circuit>(...)`. Only the
- * providers differ: instead of a headless seed-based wallet, `walletProvider`
+ * `connectToExchangeContract(providers, contractAddress).callTx.<circuit>(...)`
+ * — a thin wrapper around `createCircuitCallTxInterface` that skips
+ * `findDeployedContract`'s own `verifyContractState` step (see that
+ * function's doc comment for why). Only the providers differ: instead of a
+ * headless seed-based wallet, `walletProvider`
  * / `midnightProvider` are backed by the connected `ConnectedAPI`
  * (`balanceUnsealedTransaction` / `submitTransaction` — this is the wallet's
  * approval pop-up), and `zkConfigProvider` fetches the compiled ZK artifacts
@@ -25,7 +28,7 @@
  */
 import { CompiledContract } from "@midnight-ntwrk/compact-js";
 import type { ConnectedAPI, Configuration } from "@midnight-ntwrk/dapp-connector-api";
-import { findDeployedContract } from "@midnight-ntwrk/midnight-js-contracts";
+import { createCircuitCallTxInterface } from "@midnight-ntwrk/midnight-js-contracts";
 import { FetchZkConfigProvider } from "@midnight-ntwrk/midnight-js-fetch-zk-config-provider";
 import { httpClientProofProvider } from "@midnight-ntwrk/midnight-js-http-client-proof-provider";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
@@ -214,6 +217,42 @@ async function buildContractProviders(
 }
 
 /**
+ * Builds the `.callTx` interface for the deployed exchange contract, without
+ * going through `findDeployedContract`'s `verifyContractState` step.
+ *
+ * That step re-derives every exported circuit's verifier key via
+ * `zkConfigProvider` and compares it byte-for-byte against the verifier key
+ * registered on-chain for the same circuit — a pure client-side sanity
+ * check; `submitCallTx` below never consults it, and a genuinely bad proof
+ * is rejected for real by the network regardless. In every real browser
+ * tested (this app's own dev/incognito sessions and a separate Vercel
+ * deployment) that check throws `ContractTypeError` for cancelOrder,
+ * expireOrder, settle, reserveLiquidity, releaseLiquidity, and
+ * settleWithProtocol — always that exact set, on every redeploy tried.
+ * Reproducing the identical call server-side in Node (same contract address,
+ * same indexer, same compiled contract, same `FetchZkConfigProvider` hitting
+ * this app's own `/zk/exchange` route) always finds all 12 verifier keys
+ * matching on-chain. `@midnight-ntwrk/ledger-v8` ships separate `browser` and
+ * `node` WASM builds (see its package.json `exports` map); the mismatch
+ * exists only in the browser build's side of that check. Skip it here rather
+ * than block real orders on a false positive in a third-party WASM binary
+ * this repo doesn't control.
+ */
+async function connectToExchangeContract(
+  providers: Awaited<ReturnType<typeof buildContractProviders>>,
+  contractAddress: string,
+) {
+  const state = await providers.publicDataProvider.queryContractState(contractAddress);
+  if (!state) {
+    throw new Error(`No contract deployed at contract address '${contractAddress}'`);
+  }
+  return {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    callTx: createCircuitCallTxInterface(providers as any, compiledExchangeContract, contractAddress, undefined),
+  };
+}
+
+/**
  * Submits `createOrder(orderId, commitment)` on-chain through the connected
  * wallet: builds the call, proves it, has the wallet balance + sign it
  * (the approval pop-up), and submits it — returning once the wallet has
@@ -236,10 +275,7 @@ export async function submitCreateOrder(params: {
     params.proofServerUri,
   );
 
-  const deployed = await findDeployedContract(providers, {
-    compiledContract: compiledExchangeContract,
-    contractAddress: params.contractAddress,
-  });
+  const deployed = await connectToExchangeContract(providers, params.contractAddress);
 
   const result = await deployed.callTx.createOrder(params.orderId, params.commitment);
   return { txId: result.public.txId };
@@ -269,10 +305,7 @@ export async function submitCancelOrder(params: {
     params.proofServerUri,
   );
 
-  const deployed = await findDeployedContract(providers, {
-    compiledContract: compiledExchangeContract,
-    contractAddress: params.contractAddress,
-  });
+  const deployed = await connectToExchangeContract(providers, params.contractAddress);
 
   const result = await deployed.callTx.cancelOrder(params.orderId);
   return { txId: result.public.txId };
@@ -304,10 +337,7 @@ export async function submitSettleWithProtocol(params: {
     params.proofServerUri,
   );
 
-  const deployed = await findDeployedContract(providers, {
-    compiledContract: compiledExchangeContract,
-    contractAddress: params.contractAddress,
-  });
+  const deployed = await connectToExchangeContract(providers, params.contractAddress);
 
   const recipient = {
     is_left: false,

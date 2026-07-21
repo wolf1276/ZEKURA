@@ -75,3 +75,22 @@ midnight-level-db/
 
 # tZKR token deployment record (per-network address), like .midnight-state.json
 .midnight-tzkr.json
+
+# Audit reports
+*audit*.pdf
+
+# Stray un-dotted copies of the state/tzkr secrets (same content, same risk)
+midnight-state.json
+midnight-tzkr.json
+
+# Old manual state snapshots
+.old-state-backup/
+
+# Other-laptop transfer bundles (contain wallet seeds/circuits, not for git)
+contracts-managed.tar.gz
+zekura-transfer-bundle.tar.gz
+web.env.local
+OTHER_LAPTOP_SETUP.md
+
+# macOS AppleDouble metadata (picked up via AirDrop/USB transfers)
+._*
