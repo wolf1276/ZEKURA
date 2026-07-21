@@ -18,6 +18,30 @@ import type { AssetPair, ExpiryOption, Order, OrderSide } from "@/lib/types";
 
 const INTEGER_STRING = /^[0-9]+$/;
 
+// submitCreateOrder resolving only means the wallet relayed the transaction —
+// not that the indexer the Matcher reads from has caught up to it yet. The
+// Matcher's own on-chain read (OrderService.submitOrder) fails closed with
+// NOT_ON_CHAIN in that gap, which is real chain-finality/indexing lag, not a
+// wrong answer — so unlike every other 4xx from the Matcher, this one alone
+// is worth a few retries before surfacing an error.
+const CHAIN_LAG_RETRY_ATTEMPTS = 8;
+const CHAIN_LAG_RETRY_DELAY_MS = 2500;
+
+async function submitOrderAwaitingChain(
+  request: Parameters<typeof submitOrder>[0],
+): ReturnType<typeof submitOrder> {
+  for (let attempt = 1; attempt <= CHAIN_LAG_RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await submitOrder(request);
+    } catch (err) {
+      const isChainLag = err instanceof MatcherApiError && err.code === "NOT_ON_CHAIN";
+      if (!isChainLag || attempt === CHAIN_LAG_RETRY_ATTEMPTS) throw err;
+      await new Promise((resolve) => setTimeout(resolve, CHAIN_LAG_RETRY_DELAY_MS));
+    }
+  }
+  throw new Error("unreachable");
+}
+
 export interface SubmitOrderInput {
   pair: AssetPair;
   side: OrderSide;
@@ -135,7 +159,7 @@ export function useSubmitOrder() {
 
         setState({ phase: "disclosing" });
 
-        const { order, pendingProtocolQuote } = await submitOrder({
+        const { order, pendingProtocolQuote } = await submitOrderAwaitingChain({
           id: toHex(orderId),
           asset: input.pair.quoteAssetId,
           side: input.side,
