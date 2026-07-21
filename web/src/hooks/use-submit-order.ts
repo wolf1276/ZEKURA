@@ -24,8 +24,12 @@ const INTEGER_STRING = /^[0-9]+$/;
 // NOT_ON_CHAIN in that gap, which is real chain-finality/indexing lag, not a
 // wrong answer — so unlike every other 4xx from the Matcher, this one alone
 // is worth a few retries before surfacing an error.
-const CHAIN_LAG_RETRY_ATTEMPTS = 8;
-const CHAIN_LAG_RETRY_DELAY_MS = 2500;
+// 8 attempts / 20s total was measured too short against real Preprod
+// indexing lag — an order that failed with NOT_ON_CHAIN at 20s was
+// confirmed on-chain (state OPEN) shortly after, just past the old budget.
+// Widened with headroom rather than tuned to the one observed case.
+const CHAIN_LAG_RETRY_ATTEMPTS = 24;
+const CHAIN_LAG_RETRY_DELAY_MS = 5000;
 
 async function submitOrderAwaitingChain(
   request: Parameters<typeof submitOrder>[0],

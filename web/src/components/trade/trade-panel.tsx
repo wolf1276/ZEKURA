@@ -404,7 +404,7 @@ export function TradePanel({
               className="flex items-center gap-2"
             >
               <Loader2 className="size-4 animate-spin" />
-              {submitState.phase === "signing" ? "Awaiting Wallet Signature" : "Submitting Order"}
+              {submitState.phase === "signing" ? "Awaiting Wallet Signature" : "Waiting for On-Chain Confirmation"}
             </motion.span>
           ) : success ? (
             <motion.span
