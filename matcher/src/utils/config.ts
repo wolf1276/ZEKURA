@@ -23,6 +23,18 @@ export interface MatcherConfig {
    * funded operator wallet is expected on preview/preprod. See MATCHER.md.
    */
   readonly matcherSeedEnvVar: string;
+  /**
+   * Idle timeout for the initial wallet sync at startup: how long any one
+   * child wallet (shielded/unshielded/dust) may go without producing a state
+   * update before it's considered stalled. Not a deadline on the whole sync
+   * — a slow-but-progressing from-genesis catch-up can legitimately run for
+   * a long time and won't trip this, since it keeps emitting. The SDK has no
+   * internal timeout and cannot always recover from an indexer WebSocket
+   * disconnect on its own (see src/wallet.ts's waitForSyncedStateOrTimeout),
+   * so this bounds how long the process waits before exiting to let the
+   * platform restart with a fresh connection.
+   */
+  readonly walletSyncTimeoutMs: number;
   /** Wallet addresses (UserAddress strings) authorized to perform admin-gated Treasury actions over HTTP — see api/middleware/adminAuth.ts. Empty by default: no admin endpoints are usable until this is explicitly configured. */
   readonly adminAddresses: ReadonlySet<string>;
 }
@@ -63,6 +75,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): MatcherConfig 
       retryDelayMs: parseIntEnv(env.MATCHER_SETTLEMENT_RETRY_DELAY_MS, 5000),
     },
     matcherSeedEnvVar: 'MATCHER_WALLET_SEED',
+    walletSyncTimeoutMs: parseIntEnv(env.MATCHER_WALLET_SYNC_TIMEOUT_MS, 180_000),
     adminAddresses: parseAddressListEnv(env.MATCHER_ADMIN_ADDRESSES),
   };
 }

@@ -184,6 +184,101 @@ export async function createWallet(opts: CreateWalletOptions): Promise<WalletCon
   return { wallet, shieldedSecretKeys, dustSecretKey, unshieldedKeystore, restored, seedFingerprint };
 }
 
+export class WalletSyncStallError extends Error {
+  constructor(idleTimeoutMs: number, child?: string) {
+    super(
+      `wallet sync produced no state update for ${idleTimeoutMs}ms` +
+        (child ? ` (${child} child wallet went silent)` : ''),
+    );
+    this.name = 'WalletSyncStallError';
+  }
+}
+
+/**
+ * `wallet.waitForSyncedState()` has no internal timeout, and the SDK's own
+ * retry loop only reacts to a stream *error* — a clean stream completion
+ * (which is how a 1000 Normal Closure on the indexer WebSocket can surface)
+ * is not retried, so the underlying sync fiber for a child wallet can exit
+ * silently and the promise then never settles. There's no way to detect or
+ * re-arm that from outside the SDK.
+ *
+ * This watches each child wallet's own `.state` observable (shielded,
+ * unshielded, dust) independently and resets a per-child idle timer on every
+ * emission from that child — so a slow-but-progressing catch-up (which can
+ * legitimately run for many minutes) never trips it, since its own state
+ * keeps advancing. A single shared timer would be wrong here too: as long as
+ * any one child stays alive it would keep resetting the clock and mask
+ * another child dying silently.
+ *
+ * Once a given child reaches ITS OWN synced state, its idle timer is retired
+ * entirely: a fully-caught-up child is expected to go quiet (no new chain
+ * activity for it), and that must not be mistaken for a stall. Only genuine
+ * silence from a child that hasn't yet caught up is treated as one.
+ */
+export async function waitForSyncedStateOrTimeout(
+  wallet: WalletContext['wallet'],
+  idleTimeoutMs: number,
+): Promise<Awaited<ReturnType<WalletContext['wallet']['waitForSyncedState']>>> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timers = new Map<string, ReturnType<typeof setTimeout>>();
+    const retired = new Set<string>();
+    const subscriptions: Array<{ unsubscribe: () => void }> = [];
+
+    const cleanup = () => {
+      settled = true;
+      for (const timer of timers.values()) clearTimeout(timer);
+      for (const sub of subscriptions) sub.unsubscribe();
+    };
+    const fail = (err: unknown) => {
+      if (settled) return;
+      cleanup();
+      reject(err);
+    };
+    const retire = (name: string) => {
+      retired.add(name);
+      const timer = timers.get(name);
+      if (timer) clearTimeout(timer);
+      timers.delete(name);
+    };
+    const arm = (name: string) => {
+      if (retired.has(name)) return;
+      const existing = timers.get(name);
+      if (existing) clearTimeout(existing);
+      timers.set(
+        name,
+        setTimeout(() => fail(new WalletSyncStallError(idleTimeoutMs, name)), idleTimeoutMs),
+      );
+    };
+
+    const watch = <T>(
+      name: string,
+      child: {
+        state: { subscribe: (observer: { next: () => void; error: (err: unknown) => void }) => { unsubscribe: () => void } };
+        waitForSyncedState: () => Promise<T>;
+      },
+    ) => {
+      arm(name);
+      subscriptions.push(child.state.subscribe({ next: () => arm(name), error: fail }));
+      // Retiring on this child's OWN waitForSyncedState (rather than
+      // inspecting its emitted progress shape directly) sidesteps the fact
+      // that shielded/unshielded/dust each expose progress at a slightly
+      // different nesting under their `.state` — the per-child method is
+      // the one stable, public way to ask "is *this* child done yet".
+      child.waitForSyncedState().then(() => retire(name), fail);
+    };
+    watch('shielded', wallet.shielded);
+    watch('unshielded', wallet.unshielded);
+    watch('dust', wallet.dust);
+
+    wallet.waitForSyncedState().then((state) => {
+      if (settled) return;
+      cleanup();
+      resolve(state);
+    }, fail);
+  });
+}
+
 /**
  * Serialize each child wallet's current state and persist it for the next run.
  * Safe to call multiple times. Logs but does not throw on individual failures —

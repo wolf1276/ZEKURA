@@ -24,7 +24,14 @@ import { WebSocket } from 'ws';
 
 import type { Contract as ExchangeContract } from '../../contracts/managed/exchange/contract/index.js';
 import { getDeployment, getOrCreateAdminSecret, getOrCreateSeed, resolveNetwork } from '../../src/network.js';
-import { createWallet, persistWalletState, unshieldedToken } from '../../src/wallet.js';
+import {
+  createWallet,
+  persistWalletState,
+  startCheckpointing,
+  unshieldedToken,
+  waitForSyncedStateOrTimeout,
+  WalletSyncStallError,
+} from '../../src/wallet.js';
 import { AdminAuth } from './api/middleware/adminAuth.js';
 import { buildApp } from './app.js';
 import { BootstrapPriceRepository } from './db/repositories/BootstrapPriceRepository.js';
@@ -147,7 +154,27 @@ async function main(): Promise<void> {
   const seed = process.env[config.matcherSeedEnvVar]?.trim() || getOrCreateSeed(network, { cwd: repoRoot });
   logger.info({ network }, 'syncing matcher operator wallet');
   const walletCtx = await createWallet({ network, networkConfig, seed, cwd: repoRoot });
-  const walletState = await walletCtx.wallet.waitForSyncedState();
+  // Checkpoints periodically so a long from-genesis sync isn't lost (and
+  // doesn't have to restart from block zero) if the process is killed or
+  // restarted — e.g. by the stall guard below, or an OOM.
+  const checkpoint = startCheckpointing(network, walletCtx, { cwd: repoRoot });
+  let walletState: Awaited<ReturnType<typeof walletCtx.wallet.waitForSyncedState>>;
+  try {
+    walletState = await waitForSyncedStateOrTimeout(walletCtx.wallet, config.walletSyncTimeoutMs);
+  } catch (err) {
+    if (err instanceof WalletSyncStallError) {
+      logger.error(
+        { timeoutMs: config.walletSyncTimeoutMs, err: err.message },
+        'wallet sync stalled — the indexer WebSocket likely dropped and the SDK\'s sync loop exited without ' +
+          'retrying (a clean disconnect is not treated as an error internally); exiting so the platform restarts ' +
+          'the process with a fresh connection',
+      );
+      process.exit(1);
+    }
+    throw err;
+  } finally {
+    checkpoint.stop();
+  }
   await persistWalletState(network, walletCtx, repoRoot);
   logger.info(
     { balance: (walletState.unshielded.balances[unshieldedToken().raw] ?? 0n).toString() },
