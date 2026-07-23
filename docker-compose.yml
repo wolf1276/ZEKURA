@@ -66,5 +66,8 @@ services:
     command: ["midnight-proof-server -v"]
     ports:
       - "6300:6300"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     environment:
       RUST_BACKTRACE: "full"

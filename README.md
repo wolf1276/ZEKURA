@@ -857,8 +857,8 @@ contract are in [`matcher/API.md`](./matcher/API.md).
 
 | Network | Contract Address | Deployed |
 |---|---|---|
-| **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` (post-audit build) | 2026-07-15 |
-| **Preprod** (default network) | `f9f29d13f94bd463475fef592bb47cf1a19e74cf27b741ce5fd092ec176c0c8f` (S1 fix — `requireAdmin()` on `reserveLiquidity`/`releaseLiquidity`; 12 circuits — see Deployment.md) | 2026-07-19 |
+| **Preview** | `7e6fb224e13e12736fdfbaed2d80265105f3a942a88d61a494472c5e11152984` (post-audit build) — **unverified**: no `preview` entry exists in `.midnight-state.json` and `web/.env.local`'s preview var is empty; this row may be stale/fictional, confirm via a fresh deploy or live indexer read before trusting it | 2026-07-15 |
+| **Preprod** (default network) | `7d47503a012953623620c02164b5a0893a3dc819df3cc01fb83bedd6529e3a1a` (redeploy after the S1 fix build below; not yet documented in Deployment.md — confirm circuit set/changes before relying on this) | 2026-07-21 |
 | **Preprod — tZKR token** | `4ab7fecf77fa9ae81e560aa82fce78973eebfc289b1fef62b756938206f136b6` (`contracts/tzkr-token.compact`, native unshielded token) — real minted color `40c9bb75b7302c92ca27814fcb744529e5b4eb7d10a5fa5ef8bf6e369c8acd32` | 2026-07-19 |
 | Undeployed (local devnet) | not persistent — redeploy via `npm run setup` | — |
 

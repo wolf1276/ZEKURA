@@ -23,7 +23,7 @@ import { encodeUserAddress } from '@midnight-ntwrk/ledger-v8';
 import { getNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
 import { MidnightBech32m, UnshieldedAddress } from '@midnight-ntwrk/wallet-sdk-address-format';
 import { CompiledContract } from '@midnight-ntwrk/compact-js';
-import { resolveNetwork, getOrCreateSeed, getDeployment } from '../src/network.js';
+import { resolveNetwork, getOrCreateSeed, getDeployment, getOrCreateAdminSecret } from '../src/network.js';
 import { createWallet, persistWalletState } from '../src/wallet.js';
 import { getTzkrDeployment } from '../src/tzkr-state.js';
 import type { Contract as ExchangeContract } from '../contracts/managed/exchange/contract/index.js';
@@ -115,7 +115,10 @@ async function main() {
       return [context.privateState, entry.blinding];
     },
     ownerSecretKey: (context: any) => [context.privateState, activeOwnerSecret],
-    adminSecretKey: () => { throw new Error('not needed'); },
+    adminSecretKey: (context: any) => {
+      const adminSecretHex = getOrCreateAdminSecret(network);
+      return [context.privateState, Buffer.from(adminSecretHex, 'hex')];
+    },
   };
   const compiledContractBase = CompiledContract.make<ExchangeContract<undefined>>('exchange', Exchange.Contract);
   const compiledContractWithWitnesses = CompiledContract.withWitnesses(compiledContractBase, exchangeWitnesses);
