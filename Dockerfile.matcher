@@ -38,8 +38,8 @@ RUN cat > .midnight-state.json <<'EOF'
   "wallets": {},
   "deployments": {
     "preprod": {
-      "address": "f9f29d13f94bd463475fef592bb47cf1a19e74cf27b741ce5fd092ec176c0c8f",
-      "deployedAt": "2026-07-19T08:44:08.140Z",
+      "address": "7d47503a012953623620c02164b5a0893a3dc819df3cc01fb83bedd6529e3a1a",
+      "deployedAt": "2026-07-21T07:20:39.583Z",
       "deployer": "mn_addr_preprod1420rzrglra4qm3l26suvxx8z0wtkc6tf8wn77zggzjd4geajtg2q6ag3cz"
     }
   }
